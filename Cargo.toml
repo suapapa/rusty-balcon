@@ -1,0 +1,49 @@
+[package]
+edition      = "2024"
+name         = "rusty-balcon"
+rust-version = "1.88"
+version      = "0.1.0"
+
+[[bin]]
+name = "rusty-balcon"
+path = "./src/bin/main.rs"
+
+[dependencies]
+esp-hal = { version = "~1.0", features = ["esp32c3", "unstable"] }
+
+esp-rtos = { version = "0.2.0", features = [
+  "esp-alloc",
+  "esp-radio",
+  "esp32c3",
+] }
+
+esp-bootloader-esp-idf = { version = "0.4.0", features = ["esp32c3"] }
+
+bleps = { git = "https://github.com/bjoernQ/bleps", package = "bleps", rev = "a5148d8ae679e021b78f53fd33afb8bb35d0b62e", features = [
+  "async",
+  "macros",
+] }
+critical-section = "1.2.0"
+embedded-io = "0.7.1"
+esp-alloc = "0.9.0"
+esp-radio = { version = "0.17.0", features = [
+  "ble",
+  "esp-alloc",
+  "esp32c3",
+  "unstable",
+] }
+
+
+[profile.dev]
+# Rust debug is too slow.
+# For debug builds always builds with some optimization
+opt-level = "s"
+
+[profile.release]
+codegen-units    = 1     # LLVM can perform better optimizations using a single thread
+debug            = 2
+debug-assertions = false
+incremental      = false
+lto              = 'fat'
+opt-level        = 's'
+overflow-checks  = false
