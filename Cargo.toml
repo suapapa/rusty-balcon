@@ -1,55 +1,26 @@
 [package]
-edition      = "2024"
-name         = "rusty-balcon"
+name = "rusty-balcon"
+version = "0.1.0"
+edition = "2024"
 rust-version = "1.88"
-version      = "0.1.0"
 
 [[bin]]
 name = "rusty-balcon"
 path = "./src/bin/main.rs"
-test = false
-doctest = false
 
 [dependencies]
-esp-hal = { version = "~1.0", features = ["esp32c3", "unstable"] }
+esp-idf-svc = { version = "0.52", features = ["std", "binstart", "critical-section"] }
+esp-idf-sys = { version = "0.37", features = ["binstart"] }
+esp-idf-hal = "0.46"
+esp32-nimble = "0.12"
+anyhow = "1.0"
+log = "0.4"
 
-esp-rtos = { version = "0.2.0", features = [
-  "esp-alloc",
-  "esp-radio",
-  "esp32c3",
-] }
-
-esp-bootloader-esp-idf = { version = "0.4.0", features = ["esp32c3"] }
-
-bleps = { git = "https://github.com/bjoernQ/bleps", features = [
-  "async",
-  "macros",
-  "mtu128",
-  "crypto",
-] }
-critical-section = "1.2.0"
-embedded-io = "0.7.1"
-esp-alloc = "0.9.0"
-esp-println = { version = "0.13.0", default-features = false, features = ["esp32c3", "jtag-serial"] }
-esp-radio = { version = "0.17.0", features = [
-  "ble",
-  "esp-alloc",
-  "esp32c3",
-  "unstable",
-] }
-rand_core = "0.6"
-
-
-[profile.dev]
-# Rust debug is too slow.
-# For debug builds always builds with some optimization
-opt-level = "s"
+[build-dependencies]
+embuild = "0.33"
 
 [profile.release]
-codegen-units    = 1     # LLVM can perform better optimizations using a single thread
-debug            = 2
-debug-assertions = false
-incremental      = false
-lto              = 'fat'
-opt-level        = 's'
-overflow-checks  = false
+opt-level = "s"
+
+[profile.dev]
+opt-level = "s"

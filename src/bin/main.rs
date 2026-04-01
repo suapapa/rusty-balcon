@@ -1,44 +1,20 @@
-#![no_std]
-#![no_main]
-
-extern crate alloc;
-use alloc::boxed::Box;
-
-use bleps::{
-    Ble, HciConnector,
-    ad_structure::*,
-    attribute_server::{AttributeServer, NotificationData, WorkResult},
-    gatt,
-};
-use esp_hal::{
-    clock::CpuClock,
-    gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull, RtcPinWithResistors},
-    interrupt::software::SoftwareInterruptControl,
-    rtc_cntl::{
-        Rtc,
-        sleep::{RtcioWakeupSource, TimerWakeupSource, WakeupLevel},
-    },
-    time::Instant,
-    timer::timg::TimerGroup,
-};
-use esp_radio::ble::controller::BleConnector;
-
-#[panic_handler]
-fn panic(info: &core::panic::PanicInfo) -> ! {
-    esp_println::println!("!!! PANIC: {:?} !!!", info);
-    loop {}
-}
-
-esp_bootloader_esp_idf::esp_app_desc!();
+use anyhow::Result;
+use esp_idf_hal::delay::FreeRtos;
+use esp_idf_hal::gpio::*;
+use esp_idf_hal::peripherals::Peripherals;
+use esp_idf_svc::eventloop::EspSystemEventLoop;
+use esp_idf_svc::nvs::EspDefaultNvsPartition;
+use esp32_nimble::{enums::*, BLEAdvertisementData, BLEDevice, BLEHIDDevice};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 mod config {
-    use esp_hal::time::Duration;
-    pub const INACTIVITY_TIMEOUT: Duration = Duration::from_millis(60_000);
+    use std::time::Duration;
+    pub const INACTIVITY_TIMEOUT: Duration = Duration::from_secs(60);
     pub const PAIRING_HOLD_DURATION: Duration = Duration::from_secs(5);
     pub const BLINK_INTERVAL: Duration = Duration::from_millis(500);
-    pub const DEEP_SLEEP_WAKEUP_SEC: u64 = 10;
-    pub const KEY_A: u8 = 0x29;
-    pub const KEY_B: u8 = 0x46;
+    pub const KEY_A: u8 = 0x29; 
+    pub const KEY_B: u8 = 0x46; 
 }
 
 mod hid {
@@ -47,6 +23,7 @@ mod hid {
         0x01, 0x75, 0x01, 0x95, 0x08, 0x81, 0x02, 0x95, 0x01, 0x75, 0x08, 0x81, 0x01, 0x05, 0x07,
         0x19, 0x00, 0x29, 0x65, 0x15, 0x00, 0x25, 0x65, 0x75, 0x08, 0x95, 0x06, 0x81, 0x00, 0xc0,
     ];
+
     pub fn create_report(k1: bool, k2: bool) -> [u8; 8] {
         let mut report = [0u8; 8];
         if k1 { report[2] = crate::config::KEY_A; }
@@ -55,206 +32,127 @@ mod hid {
     }
 }
 
-pub struct EspRng {
-    trng: *const u32,
-}
-impl EspRng {
-    pub fn new() -> Self { Self { trng: 0x600260B0 as *const u32 } }
-}
-impl rand_core::RngCore for EspRng {
-    fn next_u32(&mut self) -> u32 { unsafe { core::ptr::read_volatile(self.trng) } }
-    fn next_u64(&mut self) -> u64 { (self.next_u32() as u64) << 32 | (self.next_u32() as u64) }
-    fn fill_bytes(&mut self, dest: &mut [u8]) {
-        for chunk in dest.chunks_mut(4) {
-            let val = self.next_u32().to_le_bytes();
-            chunk.copy_from_slice(&val[..chunk.len()]);
-        }
-    }
-    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand_core::Error> { self.fill_bytes(dest); Ok(()) }
-}
-impl rand_core::CryptoRng for EspRng {}
-
-pub struct SafeConnector<'a, T: bleps::HciConnection>(&'a T);
-impl<'a, T: bleps::HciConnection> bleps::HciConnection for SafeConnector<'a, T> {
-    fn read(&self) -> Option<u8> {
-        let mut b = self.0.read();
-        let mut retry = 0;
-        while b.is_none() && retry < 5000 {
-            b = self.0.read();
-            retry += 1;
-        }
-        b
-    }
-    fn write(&self, data: u8) { self.0.write(data); }
-}
-
-fn current_millis() -> u64 { Instant::now().duration_since_epoch().as_millis() }
-static mut G_ACTIVITY: bool = false;
-
 #[derive(PartialEq, Clone, Copy)]
 enum MachineState { Idle, Pairing, Connected }
 
-#[esp_hal::main]
-fn main() -> ! {
-    let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
-    let peripherals = esp_hal::init(config);
-    esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 66320); // Recommended size for BLE HID
+fn main() -> Result<()> {
+    esp_idf_sys::link_patches();
+    esp_idf_svc::log::EspLogger::initialize_default();
 
-    let timg0 = TimerGroup::new(peripherals.TIMG0);
-    let sw_interrupt = SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
-    esp_rtos::start(timg0.timer0, sw_interrupt.software_interrupt0);
+    let peripherals = Peripherals::take().unwrap();
+    let _sysloop = EspSystemEventLoop::take()?;
+    let _nvs = EspDefaultNvsPartition::take()?;
 
-    let mut rtc = Rtc::new(peripherals.LPWR);
-    let mut gpio1 = peripherals.GPIO1;
-    let mut gpio2 = peripherals.GPIO2;
-    let key1 = Input::new(gpio1.reborrow(), InputConfig::default().with_pull(Pull::Up));
-    let key2 = Input::new(gpio2.reborrow(), InputConfig::default().with_pull(Pull::Up));
-    let mut led = Output::new(peripherals.GPIO8, Level::Low, OutputConfig::default());
+    // GPIO Setup
+    let key1 = PinDriver::input(peripherals.pins.gpio1, Pull::Up)?;
+    let key2 = PinDriver::input(peripherals.pins.gpio2, Pull::Up)?;
+    let mut led = PinDriver::output(peripherals.pins.gpio8)?;
+    led.set_low()?;
 
-    let radio_init = Box::leak(Box::new(esp_radio::init().expect("Radio init failed")));
-    let connector = Box::leak(Box::new(BleConnector::new(radio_init, peripherals.BT, Default::default()).expect("Connector failed")));
-    let safe_connector = Box::leak(Box::new(SafeConnector(connector)));
-    let hci = Box::leak(Box::new(HciConnector::new(safe_connector, current_millis)));
+    // BLE Setup
+    let device = BLEDevice::take();
+    device.security()
+        .set_auth(AuthReq::Bond)
+        .set_io_cap(SecurityIOCap::NoInputNoOutput)
+        .resolve_rpa();
 
-    // GATT Attributes Definition
-    let mut rf_name = |offset: usize, data: &mut [u8]| {
-        let name = b"Balcon-Final";
-        if offset >= name.len() { return 0; }
-        let len = (name.len() - offset).min(data.len());
-        data[..len].copy_from_slice(&name[offset..offset+len]);
-        len
-    };
-    let mut rf_app = |offset: usize, data: &mut [u8]| {
-        let val = [0xC1, 0x03];
-        if offset >= val.len() { return 0; }
-        let len = (val.len() - offset).min(data.len());
-        data[..len].copy_from_slice(&val[offset..offset+len]);
-        len
-    };
-    let mut rf_info = |offset: usize, data: &mut [u8]| {
-        let val = [0x11, 0x01, 0x00, 0x02];
-        if offset >= val.len() { return 0; }
-        let len = (val.len() - offset).min(data.len());
-        data[..len].copy_from_slice(&val[offset..offset+len]);
-        len
-    };
-    let mut rf_desc = |offset: usize, data: &mut [u8]| {
-        unsafe { G_ACTIVITY = true; }
-        let d = hid::REPORT_DESCRIPTOR;
-        if offset >= d.len() { return 0; }
-        let len = (d.len() - offset).min(data.len());
-        data[..len].copy_from_slice(&d[offset..offset+len]);
-        len
-    };
-    let mut rf_rep = |_o: usize, _d: &mut [u8]| 0usize;
-    let mut wf_ctrl = |_o: usize, _d: &[u8]| {};
-    let mut rf_ref = |offset: usize, data: &mut [u8]| {
-        let val = [0x00, 0x01];
-        if offset >= val.len() { return 0; }
-        let len = (val.len() - offset).min(data.len());
-        data[..len].copy_from_slice(&val[offset..offset+len]);
-        len
-    };
+    let server = device.get_server();
+    let mut hid = BLEHIDDevice::new(server);
+    hid.report_map(hid::REPORT_DESCRIPTOR);
+    hid.pnp(0x02, 0x05ac, 0x820a, 0x0210); // Apple Magic Keyboard mock
+    hid.set_battery_level(100);
 
-    gatt!([
-        service { uuid: "1800", characteristics: [
-            characteristic { uuid: "2a00", read: rf_name },
-            characteristic { uuid: "2a01", read: rf_app },
-        ]},
-        service { uuid: "1812", characteristics: [
-            characteristic { uuid: "2a4a", read: rf_info },
-            characteristic { uuid: "2a4b", read: rf_desc },
-            characteristic { name: "hid_report", uuid: "2a4d", notify: true, read: rf_rep, descriptors: [
-                descriptor { uuid: "2908", read: rf_ref },
-            ]},
-            characteristic { uuid: "2a4c", write: wf_ctrl },
-        ]},
-    ]);
+    let input_report = hid.input_report(1);
 
-    let ble = Box::leak(Box::new(Ble::new(&mut *hci)));
-    let ble_raw = ble as *mut Ble;
+    let advertising = device.get_advertising();
+    let mut ad_data = BLEAdvertisementData::new();
+    ad_data.name("Rusty-Balcon-Std")
+        .appearance(0x03C1) // Keyboard
+        .add_service_uuid(esp32_nimble::utilities::BleUuid::from_uuid16(0x1812));
+    advertising.lock().set_data(&mut ad_data)?;
 
-    ble.init().unwrap();
-    ble.cmd_set_le_advertising_parameters().unwrap();
-    ble.cmd_set_le_advertising_data(create_advertising_data(&[
-        AdStructure::Flags(0x06),
-        AdStructure::Unknown { ty: 0x19, data: &[0xC1, 0x03] },
-        AdStructure::ServiceUuids16(&[bleps::att::Uuid::Uuid16(0x1812)]),
-        AdStructure::CompleteLocalName("Balcon-Final"),
-    ]).unwrap()).unwrap();
+    let mut state;
+    let server_arc = Arc::new(Mutex::new(MachineState::Idle));
+    let server_arc_clone = server_arc.clone();
 
-    let mut rng = EspRng::new();
-    let mut srv = AttributeServer::new(ble, &mut gatt_attributes, &mut rng);
+    server.on_connect(move |_, _| {
+        println!("Connected");
+        let mut s = server_arc_clone.lock().unwrap();
+        *s = MachineState::Connected;
+    });
 
-    let mut state = MachineState::Idle;
+    let server_arc_clone2 = server_arc.clone();
+    server.on_disconnect(move |_, _| {
+        println!("Disconnected");
+        let mut s = server_arc_clone2.lock().unwrap();
+        *s = MachineState::Idle;
+    });
+
     let mut last_activity = Instant::now();
     let mut hold_start: Option<Instant> = None;
     let mut blink_timer = Instant::now();
     let mut keys_were_pressed = false;
 
-    esp_println::println!("--- Rusty Balcon Stable ---");
+    println!("--- Rusty Balcon Std Core Ready ---");
 
     loop {
         let now = Instant::now();
         let k1_p = key1.is_low();
         let k2_p = key2.is_low();
 
-        if k1_p || k2_p { last_activity = now; }
+        state = *server_arc.lock().unwrap();
 
-        if state == MachineState::Idle && now.duration_since_epoch() - last_activity.duration_since_epoch() >= config::INACTIVITY_TIMEOUT {
-            esp_println::println!("Sleep...");
-            core::mem::drop(key1); core::mem::drop(key2);
-            let tws = TimerWakeupSource::new(core::time::Duration::from_secs(config::DEEP_SLEEP_WAKEUP_SEC));
-            let mut wp: [(&mut dyn RtcPinWithResistors, WakeupLevel); 2] = [(&mut gpio1, WakeupLevel::Low), (&mut gpio2, WakeupLevel::Low)];
-            let rows = RtcioWakeupSource::new(&mut wp);
-            rtc.sleep_deep(&[&tws, &rows]);
+        if k1_p || k2_p { 
+            last_activity = now;
         }
 
+        // Deep Sleep Logic
+        if state == MachineState::Idle && now.duration_since(last_activity) >= config::INACTIVITY_TIMEOUT {
+            println!("Sleep...");
+            FreeRtos::delay_ms(100);
+            unsafe {
+                esp_idf_sys::esp_deep_sleep_start();
+            }
+        }
+
+        // Pairing Toggle (Hold both keys for 5s)
         if k1_p && k2_p {
             if let Some(start) = hold_start {
-                if now.duration_since_epoch() - start.duration_since_epoch() >= config::PAIRING_HOLD_DURATION {
+                if now.duration_since(start) >= config::PAIRING_HOLD_DURATION {
                     if state == MachineState::Idle {
-                        esp_println::println!("Pairing Mode Wait...");
-                        state = MachineState::Pairing;
-                        unsafe {
-                            G_ACTIVITY = false;
-                            // START ADVERTISING ONLY WHEN srv IS FULLY READY
-                            (*ble_raw).cmd_set_le_advertise_enable(true).unwrap();
-                        }
+                        println!("Pairing Mode Start...");
+                        advertising.lock().start()?;
+                        let mut s = server_arc.lock().unwrap();
+                        *s = MachineState::Pairing;
                     }
                 }
             } else { hold_start = Some(now); }
         } else { hold_start = None; }
 
         match state {
-            MachineState::Pairing => {
-                if now.duration_since_epoch() - blink_timer.duration_since_epoch() >= config::BLINK_INTERVAL {
-                    led.toggle(); blink_timer = now;
-                }
-                let _ = srv.do_work();
-                if unsafe { G_ACTIVITY } {
-                    esp_println::println!("Bonding/Connected...");
-                    state = MachineState::Connected; led.set_high();
-                }
-            }
             MachineState::Connected => {
-                let note = if k1_p || k2_p {
-                    keys_were_pressed = true; Some(NotificationData::new(hid_report_handle, &hid::create_report(k1_p, k2_p)))
+                led.set_high()?;
+                if k1_p || k2_p {
+                    keys_were_pressed = true;
+                    input_report.lock().set_value(&hid::create_report(k1_p, k2_p));
+                    input_report.lock().notify();
                 } else if keys_were_pressed {
-                    keys_were_pressed = false; Some(NotificationData::new(hid_report_handle, &[0u8; 8]))
-                } else { None };
-
-                if let Ok(WorkResult::GotDisconnected) = srv.do_work_with_notification(note) {
-                    esp_println::println!("Disconnected.");
-                    state = MachineState::Idle;
-                    led.set_low();
-                    unsafe {
-                        (*ble_raw).cmd_set_le_advertise_enable(false).unwrap();
-                        G_ACTIVITY = false;
-                    }
+                    keys_were_pressed = false;
+                    input_report.lock().set_value(&[0u8; 8]);
+                    input_report.lock().notify();
                 }
             }
-            MachineState::Idle => led.set_low(),
+            MachineState::Idle => {
+                led.set_low()?;
+            }
+            MachineState::Pairing => {
+                if now.duration_since(blink_timer) >= config::BLINK_INTERVAL {
+                    led.toggle()?;
+                    blink_timer = now;
+                }
+            }
         }
+
+        FreeRtos::delay_ms(10);
     }
 }

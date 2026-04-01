@@ -40,3 +40,8 @@ _ref/
 # Agent / Tooling data (Optional: 지우고 커밋하셔도 됩니다)
 .agents/
 skills-lock.json
+
+# ESP-IDF Build artifacts
+.embuild/
+sdkconfig
+sdkconfig.old
