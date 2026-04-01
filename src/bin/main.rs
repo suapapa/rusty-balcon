@@ -4,7 +4,7 @@ use esp_idf_hal::gpio::*;
 use esp_idf_hal::peripherals::Peripherals;
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
-use esp32_nimble::{enums::*, BLEAdvertisementData, BLEDevice, BLEHIDDevice};
+use esp32_nimble::{BLEAdvertisementData, BLEDevice, BLEHIDDevice, NimbleProperties, enums::*};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -13,8 +13,8 @@ mod config {
     pub const INACTIVITY_TIMEOUT: Duration = Duration::from_secs(60);
     pub const PAIRING_HOLD_DURATION: Duration = Duration::from_secs(5);
     pub const BLINK_INTERVAL: Duration = Duration::from_millis(500);
-    pub const KEY_A: u8 = 0x29; 
-    pub const KEY_B: u8 = 0x46; 
+    pub const KEY_A: u8 = 0x29;
+    pub const KEY_B: u8 = 0x46;
 }
 
 mod hid {
@@ -26,18 +26,32 @@ mod hid {
 
     pub fn create_report(k1: bool, k2: bool) -> [u8; 8] {
         let mut report = [0u8; 8];
-        if k1 { report[2] = crate::config::KEY_A; }
-        if k2 { report[3] = crate::config::KEY_B; }
+        if k1 {
+            report[2] = crate::config::KEY_A;
+        }
+        if k2 {
+            report[3] = crate::config::KEY_B;
+        }
         report
     }
 }
 
 #[derive(PartialEq, Clone, Copy)]
-enum MachineState { Idle, Pairing, Connected }
+enum MachineState {
+    Idle,
+    Pairing,
+    Connected,
+}
 
 fn main() -> Result<()> {
     esp_idf_sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
+
+    // Suppress verbose NimBLE/GATT info logs
+    unsafe {
+        let tag = std::ffi::CString::new("NimBLE").unwrap();
+        esp_idf_sys::esp_log_level_set(tag.as_ptr(), esp_idf_sys::esp_log_level_t_ESP_LOG_WARN);
+    }
 
     let peripherals = Peripherals::take().unwrap();
     let _sysloop = EspSystemEventLoop::take()?;
@@ -50,13 +64,47 @@ fn main() -> Result<()> {
     led.set_low()?;
 
     // BLE Setup
+    let _ = BLEDevice::set_device_name("Rusty-Balcon");
     let device = BLEDevice::take();
-    device.security()
-        .set_auth(AuthReq::Bond)
+    device
+        .security()
+        .set_auth(AuthReq::all())
         .set_io_cap(SecurityIOCap::NoInputNoOutput)
         .resolve_rpa();
 
     let server = device.get_server();
+
+    // Mandatory for macOS/iOS HID: Device Info Service
+    let info_service = server.create_service(esp32_nimble::utilities::BleUuid::from_uuid16(0x180A));
+    info_service
+        .lock()
+        .create_characteristic(
+            esp32_nimble::utilities::BleUuid::from_uuid16(0x2A29),
+            NimbleProperties::READ,
+        )
+        .lock()
+        .set_value(b"Rusty-Balcon Team");
+    info_service
+        .lock()
+        .create_characteristic(
+            esp32_nimble::utilities::BleUuid::from_uuid16(0x2A24),
+            NimbleProperties::READ,
+        )
+        .lock()
+        .set_value(b"RB-01");
+
+    // Battery Service (Ensures macOS sees it as a proper peripheral)
+    let battery_service =
+        server.create_service(esp32_nimble::utilities::BleUuid::from_uuid16(0x180F));
+    battery_service
+        .lock()
+        .create_characteristic(
+            esp32_nimble::utilities::BleUuid::from_uuid16(0x2A19),
+            NimbleProperties::READ | NimbleProperties::READ_ENC | NimbleProperties::NOTIFY,
+        )
+        .lock()
+        .set_value(&[100]);
+
     let mut hid = BLEHIDDevice::new(server);
     hid.report_map(hid::REPORT_DESCRIPTOR);
     hid.pnp(0x02, 0x05ac, 0x820a, 0x0210); // Apple Magic Keyboard mock
@@ -66,7 +114,8 @@ fn main() -> Result<()> {
 
     let advertising = device.get_advertising();
     let mut ad_data = BLEAdvertisementData::new();
-    ad_data.name("Rusty-Balcon-Std")
+    ad_data
+        .name("Rusty-Balcon")
         .appearance(0x03C1) // Keyboard
         .add_service_uuid(esp32_nimble::utilities::BleUuid::from_uuid16(0x1812));
     advertising.lock().set_data(&mut ad_data)?;
@@ -75,10 +124,15 @@ fn main() -> Result<()> {
     let server_arc = Arc::new(Mutex::new(MachineState::Idle));
     let server_arc_clone = server_arc.clone();
 
-    server.on_connect(move |_, _| {
-        println!("Connected");
+    server.on_connect(move |server, desc| {
+        println!("Connected: {:?}", desc);
         let mut s = server_arc_clone.lock().unwrap();
         *s = MachineState::Connected;
+
+        // macOS prefers specific connection parameters for HID
+        server
+            .update_conn_params(desc.conn_handle(), 12, 12, 0, 200)
+            .unwrap();
     });
 
     let server_arc_clone2 = server_arc.clone();
@@ -102,12 +156,14 @@ fn main() -> Result<()> {
 
         state = *server_arc.lock().unwrap();
 
-        if k1_p || k2_p { 
+        if k1_p || k2_p {
             last_activity = now;
         }
 
         // Deep Sleep Logic
-        if state == MachineState::Idle && now.duration_since(last_activity) >= config::INACTIVITY_TIMEOUT {
+        if state == MachineState::Idle
+            && now.duration_since(last_activity) >= config::INACTIVITY_TIMEOUT
+        {
             println!("Sleep...");
             FreeRtos::delay_ms(100);
             unsafe {
@@ -126,15 +182,21 @@ fn main() -> Result<()> {
                         *s = MachineState::Pairing;
                     }
                 }
-            } else { hold_start = Some(now); }
-        } else { hold_start = None; }
+            } else {
+                hold_start = Some(now);
+            }
+        } else {
+            hold_start = None;
+        }
 
         match state {
             MachineState::Connected => {
                 led.set_high()?;
                 if k1_p || k2_p {
                     keys_were_pressed = true;
-                    input_report.lock().set_value(&hid::create_report(k1_p, k2_p));
+                    input_report
+                        .lock()
+                        .set_value(&hid::create_report(k1_p, k2_p));
                     input_report.lock().notify();
                 } else if keys_were_pressed {
                     keys_were_pressed = false;
