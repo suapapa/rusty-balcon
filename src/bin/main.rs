@@ -92,7 +92,7 @@ fn main() -> Result<()> {
     )
     .draw(&mut display);
     let _ = Text::with_alignment(
-        "v0.1.0",
+        "v0.2.0",
         Point::new(64, 42),
         welcome_style,
         Alignment::Center,
@@ -213,16 +213,24 @@ fn main() -> Result<()> {
             last_activity = now;
         }
 
-        // Deep Sleep Logic
-        if state == MachineState::Idle
+        // Deep Sleep Logic (Sleep if no activity for 60s, unless in Pairing mode)
+        if state != MachineState::Pairing
             && now.duration_since(last_activity) >= config::INACTIVITY_TIMEOUT
         {
-            println!("Sleep...");
+            println!("No activity for 60s. Entering deep sleep...");
             let _ = display.clear();
             let _ = Text::new("Sleeping...", Point::new(5, 30), style).draw(&mut display);
             let _ = display.flush();
             FreeRtos::delay_ms(500);
+
             unsafe {
+                // Wake up from GPIO1 or GPIO2 (Low level)
+                use esp_idf_sys::*;
+                const WAKEUP_PIN_MASK: u64 = (1 << 1) | (1 << 2);
+                esp_deep_sleep_enable_gpio_wakeup(
+                    WAKEUP_PIN_MASK,
+                    esp_deepsleep_gpio_wake_up_mode_t_ESP_GPIO_WAKEUP_GPIO_LOW,
+                );
                 esp_idf_sys::esp_deep_sleep_start();
             }
         }
