@@ -21,9 +21,11 @@ esp-rtos = { version = "0.2.0", features = [
 
 esp-bootloader-esp-idf = { version = "0.4.0", features = ["esp32c3"] }
 
-bleps = { git = "https://github.com/bjoernQ/bleps", package = "bleps", rev = "a5148d8ae679e021b78f53fd33afb8bb35d0b62e", features = [
+bleps = { git = "https://github.com/bjoernQ/bleps", features = [
   "async",
   "macros",
+  "mtu128",
+  "crypto",
 ] }
 critical-section = "1.2.0"
 embedded-io = "0.7.1"
@@ -35,6 +37,7 @@ esp-radio = { version = "0.17.0", features = [
   "esp32c3",
   "unstable",
 ] }
+rand_core = "0.6"
 
 
 [profile.dev]

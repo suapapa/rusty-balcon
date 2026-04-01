@@ -6,8 +6,8 @@
 
 - **Microcontroller**: ESP32-C3
 - **Inputs**: 2 Push Buttons connected to RTC-capable GPIO pins:
-  - Key 1: `GPIO2` (Internal Pull-Up) - Maps to `ESC`
-  - Key 2: `GPIO3` (Internal Pull-Up) - Maps to `Print Screen` (`F13` on Mac)
+- Key 1: `GPIO1` (Internal Pull-Up) - Maps to `ESC`
+- Key 2: `GPIO2` (Internal Pull-Up) - Maps to `Print Screen` (`F13` on Mac)
 - **Output**: 1 LED connected to `GPIO8`
 
 ## Features

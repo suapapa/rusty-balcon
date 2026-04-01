@@ -32,7 +32,7 @@
 
 - **State Machine**: The application logic runs on a continuous loop tracking state (Idle, Pairing, Connected) while comparing `Instant::now()` variables against `last_activity` timestamps for transitions.
 - **Asynchronous Bluetooth**: The `bleps` framework handles characteristics closures via `do_work()` and `do_work_with_notification()`. Take note of stringent closure lifetimes and avoid moving borrowed context.
-- **Deep Sleep**: Use `esp_hal::rtc_cntl::Rtc`. Wakeup from deep sleep relies on routing standard keys (`GPIO2` and `GPIO3`) into `RtcioWakeupSource`.
+- **Deep Sleep**: Use `esp_hal::rtc_cntl::Rtc`. Wakeup from deep sleep relies on routing standard keys (`GPIO1` and `GPIO2`) into `RtcioWakeupSource`.
 - **Lint & Format**: Observe `rustfmt` rules. Check code strictly with `cargo clippy --release`.
 
 ## Testing Instructions
