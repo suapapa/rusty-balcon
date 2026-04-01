@@ -1,6 +1,6 @@
 [package]
 name = "rusty-balcon"
-version = "0.0.1"
+version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
 
@@ -15,6 +15,8 @@ esp-idf-hal = "0.46"
 esp32-nimble = "0.12"
 anyhow = "1.0"
 log = "0.4"
+embedded-graphics = "0.8"
+sh1106 = "0.5" # 1.3" I2C OLED (Standard Blue OLED uses this)
 
 [build-dependencies]
 embuild = "0.33"

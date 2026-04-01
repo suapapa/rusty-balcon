@@ -1,18 +1,28 @@
 use anyhow::Result;
 use esp_idf_hal::delay::FreeRtos;
 use esp_idf_hal::gpio::*;
+use esp_idf_hal::i2c::*;
 use esp_idf_hal::peripherals::Peripherals;
+use esp_idf_hal::units::*;
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp32_nimble::{BLEAdvertisementData, BLEDevice, BLEHIDDevice, NimbleProperties, enums::*};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use embedded_graphics::{
+    mono_font::{MonoTextStyle, ascii::FONT_6X10},
+    pixelcolor::BinaryColor,
+    prelude::*,
+    text::{Alignment, Text},
+};
+use sh1106::Builder;
+use sh1106::prelude::GraphicsMode;
+
 mod config {
     use std::time::Duration;
     pub const INACTIVITY_TIMEOUT: Duration = Duration::from_secs(60);
     pub const PAIRING_HOLD_DURATION: Duration = Duration::from_secs(5);
-    pub const BLINK_INTERVAL: Duration = Duration::from_millis(500);
     pub const KEY_A: u8 = 0x29;
     pub const KEY_B: u8 = 0x46;
 }
@@ -36,7 +46,7 @@ mod hid {
     }
 }
 
-#[derive(PartialEq, Clone, Copy)]
+#[derive(PartialEq, Clone, Copy, Debug)]
 enum MachineState {
     Idle,
     Pairing,
@@ -60,8 +70,36 @@ fn main() -> Result<()> {
     // GPIO Setup
     let key1 = PinDriver::input(peripherals.pins.gpio1, Pull::Up)?;
     let key2 = PinDriver::input(peripherals.pins.gpio2, Pull::Up)?;
-    let mut led = PinDriver::output(peripherals.pins.gpio8)?;
-    led.set_low()?;
+
+    // I2C & Display Setup
+    let sda = peripherals.pins.gpio8;
+    let scl = peripherals.pins.gpio9;
+    let i2c_config = I2cConfig::new().baudrate(100u32.kHz().into());
+    let i2c_driver = I2cDriver::new(peripherals.i2c0, sda, scl, &i2c_config)?;
+
+    let mut display: GraphicsMode<_> = Builder::new().connect_i2c(i2c_driver).into();
+
+    display.init().unwrap_or_else(|e| {
+        println!("Display init error: {:?}", e);
+    });
+    let _ = display.clear();
+    let welcome_style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
+    let _ = Text::with_alignment(
+        "RUSTY BALCON",
+        Point::new(64, 28),
+        welcome_style,
+        Alignment::Center,
+    )
+    .draw(&mut display);
+    let _ = Text::with_alignment(
+        "v0.1.0",
+        Point::new(64, 42),
+        welcome_style,
+        Alignment::Center,
+    )
+    .draw(&mut display);
+    let _ = display.flush();
+    FreeRtos::delay_ms(1000);
 
     // BLE Setup
     let _ = BLEDevice::set_device_name("Rusty-Balcon");
@@ -111,6 +149,13 @@ fn main() -> Result<()> {
     hid.set_battery_level(100);
 
     let input_report = hid.input_report(1);
+    input_report.lock().on_subscribe(|_server, desc, sub| {
+        println!(
+            "HID Subscribed: conn={:?} status={:?}",
+            desc.conn_handle(),
+            sub
+        );
+    });
 
     let advertising = device.get_advertising();
     let mut ad_data = BLEAdvertisementData::new();
@@ -119,42 +164,50 @@ fn main() -> Result<()> {
         .appearance(0x03C1) // Keyboard
         .add_service_uuid(esp32_nimble::utilities::BleUuid::from_uuid16(0x1812));
     advertising.lock().set_data(&mut ad_data)?;
+    println!("Starting advertising on boot...");
+    if let Err(e) = advertising.lock().start() {
+        println!("Failed to start advertising: {:?}", e);
+    }
 
-    let mut state;
+    let mut state = MachineState::Idle;
     let server_arc = Arc::new(Mutex::new(MachineState::Idle));
     let server_arc_clone = server_arc.clone();
 
     server.on_connect(move |server, desc| {
-        println!("Connected: {:?}", desc);
+        println!("BLE Connected: {:?}", desc);
         let mut s = server_arc_clone.lock().unwrap();
         *s = MachineState::Connected;
 
         // macOS prefers specific connection parameters for HID
-        server
-            .update_conn_params(desc.conn_handle(), 12, 12, 0, 200)
-            .unwrap();
+        if let Err(e) = server.update_conn_params(desc.conn_handle(), 12, 12, 0, 400) {
+            println!("Failed to update conn params: {:?}", e);
+        }
     });
 
     let server_arc_clone2 = server_arc.clone();
-    server.on_disconnect(move |_, _| {
-        println!("Disconnected");
+    server.on_disconnect(move |desc, reason| {
+        println!("BLE Disconnected: {:?}, reason: {:?}", desc, reason);
         let mut s = server_arc_clone2.lock().unwrap();
         *s = MachineState::Idle;
     });
 
     let mut last_activity = Instant::now();
     let mut hold_start: Option<Instant> = None;
-    let mut blink_timer = Instant::now();
-    let mut keys_were_pressed = false;
-
-    println!("--- Rusty Balcon Std Core Ready ---");
+    let mut last_display_state = (MachineState::Idle, true, true, true); // Force initial draw
+    let mut last_report = [0u8; 8];
+    let blink_timer = Instant::now();
+    let style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
 
     loop {
         let now = Instant::now();
         let k1_p = key1.is_low();
         let k2_p = key2.is_low();
 
-        state = *server_arc.lock().unwrap();
+        let new_state = *server_arc.lock().unwrap();
+        if new_state != state {
+            println!("State changed: {:?} -> {:?}", state, new_state);
+            state = new_state;
+        }
 
         if k1_p || k2_p {
             last_activity = now;
@@ -165,7 +218,10 @@ fn main() -> Result<()> {
             && now.duration_since(last_activity) >= config::INACTIVITY_TIMEOUT
         {
             println!("Sleep...");
-            FreeRtos::delay_ms(100);
+            let _ = display.clear();
+            let _ = Text::new("Sleeping...", Point::new(5, 30), style).draw(&mut display);
+            let _ = display.flush();
+            FreeRtos::delay_ms(500);
             unsafe {
                 esp_idf_sys::esp_deep_sleep_start();
             }
@@ -175,9 +231,14 @@ fn main() -> Result<()> {
         if k1_p && k2_p {
             if let Some(start) = hold_start {
                 if now.duration_since(start) >= config::PAIRING_HOLD_DURATION {
-                    if state == MachineState::Idle {
-                        println!("Pairing Mode Start...");
-                        advertising.lock().start()?;
+                    if state != MachineState::Pairing {
+                        println!("Manual Pairing Start (Clearing all bonds)...");
+                        unsafe {
+                            esp_idf_sys::ble_store_clear();
+                        }
+                        if let Err(e) = advertising.lock().start() {
+                            println!("Failed to start pairing advertising: {:?}", e);
+                        }
                         let mut s = server_arc.lock().unwrap();
                         *s = MachineState::Pairing;
                     }
@@ -189,30 +250,72 @@ fn main() -> Result<()> {
             hold_start = None;
         }
 
+        // Update Display
+        let is_pairing_blink = state == MachineState::Pairing
+            && (now.duration_since(blink_timer).as_millis() % 1000 < 500);
+        let current_display_state = (state, k1_p, k2_p, is_pairing_blink);
+
+        if current_display_state != last_display_state {
+            let _ = display.clear();
+
+            let header_style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
+            let _ = Text::with_alignment(
+                "RUSTY BALCON",
+                Point::new(64, 12),
+                header_style,
+                Alignment::Center,
+            )
+            .draw(&mut display);
+
+            let status_text = match state {
+                MachineState::Idle => "IDLE",
+                MachineState::Pairing => {
+                    if is_pairing_blink {
+                        ">> PAIRING <<"
+                    } else {
+                        "   PAIRING   "
+                    }
+                }
+                MachineState::Connected => "CONNECTED",
+            };
+            let _ = Text::with_alignment(
+                status_text,
+                Point::new(64, 32),
+                header_style,
+                Alignment::Center,
+            )
+            .draw(&mut display);
+
+            let keys_text = format!(
+                "{}  {}",
+                if k1_p { "[A]" } else { " _ " },
+                if k2_p { "[B]" } else { " _ " }
+            );
+            let _ = Text::with_alignment(
+                &keys_text,
+                Point::new(64, 52),
+                header_style,
+                Alignment::Center,
+            )
+            .draw(&mut display);
+
+            if let Err(e) = display.flush() {
+                println!("Display flush error: {:?}", e);
+            }
+            last_display_state = current_display_state;
+        }
+
         match state {
             MachineState::Connected => {
-                led.set_high()?;
-                if k1_p || k2_p {
-                    keys_were_pressed = true;
-                    input_report
-                        .lock()
-                        .set_value(&hid::create_report(k1_p, k2_p));
+                let current_report = hid::create_report(k1_p, k2_p);
+                if current_report != last_report {
+                    input_report.lock().set_value(&current_report);
                     input_report.lock().notify();
-                } else if keys_were_pressed {
-                    keys_were_pressed = false;
-                    input_report.lock().set_value(&[0u8; 8]);
-                    input_report.lock().notify();
+                    last_report = current_report;
                 }
             }
-            MachineState::Idle => {
-                led.set_low()?;
-            }
-            MachineState::Pairing => {
-                if now.duration_since(blink_timer) >= config::BLINK_INTERVAL {
-                    led.toggle()?;
-                    blink_timer = now;
-                }
-            }
+            MachineState::Idle => {}
+            MachineState::Pairing => {}
         }
 
         FreeRtos::delay_ms(10);
