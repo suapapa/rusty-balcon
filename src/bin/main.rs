@@ -23,26 +23,34 @@ mod config {
     use std::time::Duration;
     pub const INACTIVITY_TIMEOUT: Duration = Duration::from_secs(60);
     pub const PAIRING_HOLD_DURATION: Duration = Duration::from_secs(5);
-    pub const KEY_A: u8 = 0x29;
-    pub const KEY_B: u8 = 0x46;
+    pub const KEY_A: u8 = 0x29; // ESC
 }
 
 mod hid {
     pub const REPORT_DESCRIPTOR: &[u8] = &[
-        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07, 0x19, 0xe0, 0x29, 0xe7, 0x15, 0x00, 0x25,
-        0x01, 0x75, 0x01, 0x95, 0x08, 0x81, 0x02, 0x95, 0x01, 0x75, 0x08, 0x81, 0x01, 0x05, 0x07,
+        // Keyboard Report (ID 1)
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x85, 0x01, 0x05, 0x07, 0x19, 0xe0, 0x29, 0xe7, 0x15, 0x00,
+        0x25, 0x01, 0x75, 0x01, 0x95, 0x08, 0x81, 0x02, 0x95, 0x01, 0x75, 0x08, 0x81, 0x01, 0x05, 0x07,
         0x19, 0x00, 0x29, 0x65, 0x15, 0x00, 0x25, 0x65, 0x75, 0x08, 0x95, 0x06, 0x81, 0x00, 0xc0,
+        // Consumer Control Report (ID 2)
+        0x05, 0x0c, 0x09, 0x01, 0xa1, 0x01, 0x85, 0x02, 0x15, 0x00, 0x25, 0x01, 0x75, 0x01, 0x95, 0x01,
+        0x09, 0xcf, 0x81, 0x02, 0x75, 0x01, 0x95, 0x07, 0x81, 0x03, 0xc0,
     ];
 
-    pub fn create_report(k1: bool, k2: bool) -> [u8; 8] {
+    pub fn create_keyboard_report(pressed: bool) -> [u8; 8] {
         let mut report = [0u8; 8];
-        if k1 {
+        if pressed {
             report[2] = crate::config::KEY_A;
         }
-        if k2 {
-            report[3] = crate::config::KEY_B;
-        }
         report
+    }
+
+    pub fn create_consumer_report(voice_pressed: bool) -> [u8; 1] {
+        if voice_pressed {
+            [0x01] // Bit 0 is Voice Command (0xCF)
+        } else {
+            [0x00]
+        }
     }
 }
 
@@ -148,14 +156,8 @@ fn main() -> Result<()> {
     hid.pnp(0x02, 0x05ac, 0x820a, 0x0210); // Apple Magic Keyboard mock
     hid.set_battery_level(100);
 
-    let input_report = hid.input_report(1);
-    input_report.lock().on_subscribe(|_server, desc, sub| {
-        println!(
-            "HID Subscribed: conn={:?} status={:?}",
-            desc.conn_handle(),
-            sub
-        );
-    });
+    let keyboard_report = hid.input_report(1);
+    let consumer_report = hid.input_report(2);
 
     let advertising = device.get_advertising();
     let mut ad_data = BLEAdvertisementData::new();
@@ -194,7 +196,8 @@ fn main() -> Result<()> {
     let mut last_activity = Instant::now();
     let mut hold_start: Option<Instant> = None;
     let mut last_display_state = (MachineState::Idle, true, true, true); // Force initial draw
-    let mut last_report = [0u8; 8];
+    let mut last_kb_report = [0u8; 8];
+    let mut last_cons_report = [0u8; 1];
     let blink_timer = Instant::now();
     let style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
 
@@ -315,11 +318,18 @@ fn main() -> Result<()> {
 
         match state {
             MachineState::Connected => {
-                let current_report = hid::create_report(k1_p, k2_p);
-                if current_report != last_report {
-                    input_report.lock().set_value(&current_report);
-                    input_report.lock().notify();
-                    last_report = current_report;
+                let current_kb = hid::create_keyboard_report(k1_p);
+                if current_kb != last_kb_report {
+                    keyboard_report.lock().set_value(&current_kb);
+                    keyboard_report.lock().notify();
+                    last_kb_report = current_kb;
+                }
+
+                let current_cons = hid::create_consumer_report(k2_p);
+                if current_cons != last_cons_report {
+                    consumer_report.lock().set_value(&current_cons);
+                    consumer_report.lock().notify();
+                    last_cons_report = current_cons;
                 }
             }
             MachineState::Idle => {}
