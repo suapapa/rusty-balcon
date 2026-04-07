@@ -21,7 +21,7 @@ use sh1106::prelude::GraphicsMode;
 
 mod config {
     use std::time::Duration;
-    pub const INACTIVITY_TIMEOUT: Duration = Duration::from_secs(60);
+    pub const INACTIVITY_TIMEOUT: Duration = Duration::from_secs(1800);
     pub const PAIRING_HOLD_DURATION: Duration = Duration::from_secs(5);
     pub const KEY_A: u8 = 0x29; // ESC
 }
@@ -199,7 +199,6 @@ fn main() -> Result<()> {
     let mut last_kb_report = [0u8; 8];
     let mut last_cons_report = [0u8; 1];
     let blink_timer = Instant::now();
-    let style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
 
     loop {
         let now = Instant::now();
@@ -220,11 +219,10 @@ fn main() -> Result<()> {
         if state != MachineState::Pairing
             && now.duration_since(last_activity) >= config::INACTIVITY_TIMEOUT
         {
-            println!("No activity for 60s. Entering deep sleep...");
+            println!("No activity for 30m. Entering deep sleep...");
             let _ = display.clear();
-            let _ = Text::new("Sleeping...", Point::new(5, 30), style).draw(&mut display);
             let _ = display.flush();
-            FreeRtos::delay_ms(500);
+            FreeRtos::delay_ms(100);
 
             unsafe {
                 // Wake up from GPIO1 or GPIO2 (Low level)
