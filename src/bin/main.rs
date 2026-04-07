@@ -100,10 +100,10 @@ fn main() -> Result<()> {
     )
     .draw(&mut display);
     let _ = Text::with_alignment(
-        "v0.2.0",
-        Point::new(64, 42),
+        env!("GIT_TAG"),
+        Point::new(127, 62),
         welcome_style,
-        Alignment::Center,
+        Alignment::Right,
     )
     .draw(&mut display);
     let _ = display.flush();
@@ -305,6 +305,14 @@ fn main() -> Result<()> {
                 Point::new(64, 52),
                 header_style,
                 Alignment::Center,
+            )
+            .draw(&mut display);
+
+            let _ = Text::with_alignment(
+                env!("GIT_TAG"),
+                Point::new(127, 62),
+                header_style,
+                Alignment::Right,
             )
             .draw(&mut display);
 
