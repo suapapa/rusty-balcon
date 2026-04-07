@@ -11,9 +11,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use embedded_graphics::{
-    mono_font::{MonoTextStyle, ascii::FONT_6X10},
+    mono_font::{
+        ascii::{FONT_6X10, FONT_8X13},
+        MonoTextStyle, MonoTextStyleBuilder,
+    },
     pixelcolor::BinaryColor,
     prelude::*,
+    primitives::{Line, PrimitiveStyle, Rectangle},
     text::{Alignment, Text},
 };
 use sh1106::Builder;
@@ -91,23 +95,25 @@ fn main() -> Result<()> {
         println!("Display init error: {:?}", e);
     });
     let _ = display.clear();
-    let welcome_style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
+    let welcome_style = MonoTextStyle::new(&FONT_8X13, BinaryColor::On);
+    let tag_style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
+
     let _ = Text::with_alignment(
         "RUSTY BALCON",
-        Point::new(64, 28),
+        Point::new(64, 30),
         welcome_style,
         Alignment::Center,
     )
     .draw(&mut display);
     let _ = Text::with_alignment(
         env!("GIT_TAG"),
-        Point::new(127, 62),
-        welcome_style,
-        Alignment::Right,
+        Point::new(64, 45),
+        tag_style,
+        Alignment::Center,
     )
     .draw(&mut display);
     let _ = display.flush();
-    FreeRtos::delay_ms(1000);
+    FreeRtos::delay_ms(1500);
 
     // BLE Setup
     let _ = BLEDevice::set_device_name("Rusty-Balcon");
@@ -268,51 +274,88 @@ fn main() -> Result<()> {
             let _ = display.clear();
 
             let header_style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
+            let status_style = MonoTextStyle::new(&FONT_8X13, BinaryColor::On);
+
+            // App Title
             let _ = Text::with_alignment(
                 "RUSTY BALCON",
-                Point::new(64, 12),
+                Point::new(64, 10),
                 header_style,
                 Alignment::Center,
             )
             .draw(&mut display);
 
+            // Separator Line
+            let _ = Line::new(Point::new(0, 14), Point::new(127, 14))
+                .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+                .draw(&mut display);
+
+            // Connection Status
             let status_text = match state {
                 MachineState::Idle => "IDLE",
                 MachineState::Pairing => {
                     if is_pairing_blink {
                         ">> PAIRING <<"
                     } else {
-                        "   PAIRING   "
+                        "-- PAIRING --"
                     }
                 }
                 MachineState::Connected => "CONNECTED",
             };
             let _ = Text::with_alignment(
                 status_text,
-                Point::new(64, 32),
-                header_style,
+                Point::new(64, 33),
+                status_style,
                 Alignment::Center,
             )
             .draw(&mut display);
 
-            let keys_text = format!(
-                "{}  {}",
-                if k1_p { "[A]" } else { " _ " },
-                if k2_p { "[B]" } else { " _ " }
-            );
+            // Key Visualization Boxes
+            let key_width = 24u32;
+            let key_height = 14u32;
+            let key_y = 42i32;
+
+            // Key 1 (A)
+            let k1_rect = Rectangle::new(Point::new(34, key_y), Size::new(key_width, key_height));
+            let k1_style = if k1_p {
+                PrimitiveStyle::with_fill(BinaryColor::On)
+            } else {
+                PrimitiveStyle::with_stroke(BinaryColor::On, 1)
+            };
+            let _ = k1_rect.into_styled(k1_style).draw(&mut display);
+
+            let k1_text_style = if k1_p {
+                MonoTextStyleBuilder::new().font(&FONT_6X10).text_color(BinaryColor::Off).build()
+            } else {
+                header_style
+            };
             let _ = Text::with_alignment(
-                &keys_text,
-                Point::new(64, 52),
-                header_style,
+                "A",
+                Point::new(34 + key_width as i32 / 2, key_y + 11),
+                k1_text_style,
                 Alignment::Center,
             )
             .draw(&mut display);
 
+            // Key 2 (B)
+            let k2_rect = Rectangle::new(Point::new(70, key_y), Size::new(key_width, key_height));
+            let k2_style = if k2_p {
+                PrimitiveStyle::with_fill(BinaryColor::On)
+            } else {
+                PrimitiveStyle::with_stroke(BinaryColor::On, 1)
+            };
+            let _ = k2_rect.into_styled(k2_style).draw(&mut display);
+
+            let k2_text_style = if k2_p {
+                MonoTextStyleBuilder::new().font(&FONT_6X10).text_color(BinaryColor::Off).build()
+            } else {
+                header_style
+            };
             let _ = Text::with_alignment(
-                env!("GIT_TAG"),
-                Point::new(127, 62),
-                header_style,
-                Alignment::Right,
+                "B",
+                Point::new(70 + key_width as i32 / 2, key_y + 11),
+                k2_text_style,
+                Alignment::Center,
             )
             .draw(&mut display);
 
