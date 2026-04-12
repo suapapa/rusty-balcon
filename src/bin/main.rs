@@ -12,8 +12,8 @@ use std::time::Instant;
 
 use embedded_graphics::{
     mono_font::{
-        ascii::{FONT_6X10, FONT_8X13},
         MonoTextStyle, MonoTextStyleBuilder,
+        ascii::{FONT_6X10, FONT_8X13},
     },
     pixelcolor::BinaryColor,
     prelude::*,
@@ -25,7 +25,8 @@ use sh1106::prelude::GraphicsMode;
 
 mod config {
     use std::time::Duration;
-    pub const INACTIVITY_TIMEOUT: Duration = Duration::from_secs(1800);
+    pub const INACTIVITY_TIMEOUT: Duration = Duration::from_secs(300); // 5 minutes
+    pub const DISPLAY_TIMEOUT: Duration = Duration::from_secs(30); // 30 seconds
     pub const PAIRING_HOLD_DURATION: Duration = Duration::from_secs(5);
     pub const KEY_A: u8 = 0x29; // ESC
 }
@@ -33,12 +34,12 @@ mod config {
 mod hid {
     pub const REPORT_DESCRIPTOR: &[u8] = &[
         // Keyboard Report (ID 1)
-        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x85, 0x01, 0x05, 0x07, 0x19, 0xe0, 0x29, 0xe7, 0x15, 0x00,
-        0x25, 0x01, 0x75, 0x01, 0x95, 0x08, 0x81, 0x02, 0x95, 0x01, 0x75, 0x08, 0x81, 0x01, 0x05, 0x07,
-        0x19, 0x00, 0x29, 0x65, 0x15, 0x00, 0x25, 0x65, 0x75, 0x08, 0x95, 0x06, 0x81, 0x00, 0xc0,
-        // Consumer Control Report (ID 2)
-        0x05, 0x0c, 0x09, 0x01, 0xa1, 0x01, 0x85, 0x02, 0x15, 0x00, 0x25, 0x01, 0x75, 0x01, 0x95, 0x01,
-        0x09, 0xcf, 0x81, 0x02, 0x75, 0x01, 0x95, 0x07, 0x81, 0x03, 0xc0,
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x85, 0x01, 0x05, 0x07, 0x19, 0xe0, 0x29, 0xe7, 0x15,
+        0x00, 0x25, 0x01, 0x75, 0x01, 0x95, 0x08, 0x81, 0x02, 0x95, 0x01, 0x75, 0x08, 0x81, 0x01,
+        0x05, 0x07, 0x19, 0x00, 0x29, 0x65, 0x15, 0x00, 0x25, 0x65, 0x75, 0x08, 0x95, 0x06, 0x81,
+        0x00, 0xc0, // Consumer Control Report (ID 2)
+        0x05, 0x0c, 0x09, 0x01, 0xa1, 0x01, 0x85, 0x02, 0x15, 0x00, 0x25, 0x01, 0x75, 0x01, 0x95,
+        0x01, 0x09, 0xcf, 0x81, 0x02, 0x75, 0x01, 0x95, 0x07, 0x81, 0x03, 0xc0,
     ];
 
     pub fn create_keyboard_report(pressed: bool) -> [u8; 8] {
@@ -94,6 +95,7 @@ fn main() -> Result<()> {
     display.init().unwrap_or_else(|e| {
         println!("Display init error: {:?}", e);
     });
+    let _ = display.set_contrast(0x10); // Dim the display to save power
     let _ = display.clear();
     let welcome_style = MonoTextStyle::new(&FONT_8X13, BinaryColor::On);
     let tag_style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
@@ -204,6 +206,7 @@ fn main() -> Result<()> {
     let mut last_display_state = (MachineState::Idle, true, true, true); // Force initial draw
     let mut last_kb_report = [0u8; 8];
     let mut last_cons_report = [0u8; 1];
+    let mut display_is_on = true;
     let blink_timer = Instant::now();
 
     loop {
@@ -265,12 +268,32 @@ fn main() -> Result<()> {
             hold_start = None;
         }
 
+        // Display Power Management
+        let inactivity_duration = now.duration_since(last_activity);
+        let target_display_on =
+            state == MachineState::Pairing || inactivity_duration < config::DISPLAY_TIMEOUT;
+
+        if target_display_on != display_is_on {
+            if target_display_on {
+                let _ = display.set_contrast(0x10);
+            } else {
+                let _ = display.set_contrast(0);
+                let _ = display.clear();
+                let _ = display.flush();
+            }
+            display_is_on = target_display_on;
+            if display_is_on {
+                // Force redraw when turning back on
+                last_display_state = (MachineState::Idle, true, true, true);
+            }
+        }
+
         // Update Display
         let is_pairing_blink = state == MachineState::Pairing
             && (now.duration_since(blink_timer).as_millis() % 1000 < 500);
         let current_display_state = (state, k1_p, k2_p, is_pairing_blink);
 
-        if current_display_state != last_display_state {
+        if display_is_on && current_display_state != last_display_state {
             let _ = display.clear();
 
             let header_style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
@@ -325,7 +348,10 @@ fn main() -> Result<()> {
             let _ = k1_rect.into_styled(k1_style).draw(&mut display);
 
             let k1_text_style = if k1_p {
-                MonoTextStyleBuilder::new().font(&FONT_6X10).text_color(BinaryColor::Off).build()
+                MonoTextStyleBuilder::new()
+                    .font(&FONT_6X10)
+                    .text_color(BinaryColor::Off)
+                    .build()
             } else {
                 header_style
             };
@@ -347,7 +373,10 @@ fn main() -> Result<()> {
             let _ = k2_rect.into_styled(k2_style).draw(&mut display);
 
             let k2_text_style = if k2_p {
-                MonoTextStyleBuilder::new().font(&FONT_6X10).text_color(BinaryColor::Off).build()
+                MonoTextStyleBuilder::new()
+                    .font(&FONT_6X10)
+                    .text_color(BinaryColor::Off)
+                    .build()
             } else {
                 header_style
             };
