@@ -8,7 +8,7 @@ use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp32_nimble::{BLEAdvertisementData, BLEDevice, BLEHIDDevice, NimbleProperties, enums::*};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use embedded_graphics::{
     mono_font::{
@@ -75,6 +75,25 @@ fn main() -> Result<()> {
         let tag = std::ffi::CString::new("NimBLE").unwrap();
         esp_idf_sys::esp_log_level_set(tag.as_ptr(), esp_idf_sys::esp_log_level_t_ESP_LOG_WARN);
     }
+
+    // Check wakeup cause before taking peripherals (must be called early)
+    let wakeup_gpio_status: u64 = unsafe {
+        let cause = esp_idf_sys::esp_sleep_get_wakeup_cause();
+        if cause == esp_idf_sys::esp_sleep_source_t_ESP_SLEEP_WAKEUP_GPIO {
+            esp_idf_sys::esp_sleep_get_gpio_wakeup_status()
+        } else {
+            0
+        }
+    };
+    // Bit 1 = GPIO1 (key1/A), Bit 2 = GPIO2 (key2/voice)
+    let wakeup_pending: Option<(bool, bool)> = if wakeup_gpio_status != 0 {
+        Some((
+            (wakeup_gpio_status & (1 << 1)) != 0,
+            (wakeup_gpio_status & (1 << 2)) != 0,
+        ))
+    } else {
+        None
+    };
 
     let peripherals = Peripherals::take().unwrap();
     let _sysloop = EspSystemEventLoop::take()?;
@@ -208,6 +227,8 @@ fn main() -> Result<()> {
     let mut last_cons_report = [0u8; 1];
     let mut display_is_on = true;
     let blink_timer = Instant::now();
+    let mut wakeup_key_to_send = wakeup_pending; // pending key from deep sleep wakeup
+    let mut connect_time: Option<Instant> = None; // time of last BLE connection
 
     loop {
         let now = Instant::now();
@@ -217,6 +238,9 @@ fn main() -> Result<()> {
         let new_state = *server_arc.lock().unwrap();
         if new_state != state {
             println!("State changed: {:?} -> {:?}", state, new_state);
+            if new_state == MachineState::Connected {
+                connect_time = Some(now);
+            }
             state = new_state;
         }
 
@@ -291,7 +315,8 @@ fn main() -> Result<()> {
         // Update Display
         let is_pairing_blink = state == MachineState::Pairing
             && (now.duration_since(blink_timer).as_millis() % 1000 < 500);
-        let current_display_state = (state, k1_p, k2_p, is_pairing_blink);
+        let is_reconnecting = wakeup_key_to_send.is_some();
+        let current_display_state = (state, k1_p, k2_p, is_pairing_blink || is_reconnecting);
 
         if display_is_on && current_display_state != last_display_state {
             let _ = display.clear();
@@ -315,7 +340,13 @@ fn main() -> Result<()> {
 
             // Connection Status
             let status_text = match state {
-                MachineState::Idle => "IDLE",
+                MachineState::Idle => {
+                    if wakeup_key_to_send.is_some() {
+                        "RECONNECTING..."
+                    } else {
+                        "IDLE"
+                    }
+                }
                 MachineState::Pairing => {
                     if is_pairing_blink {
                         ">> PAIRING <<"
@@ -396,6 +427,31 @@ fn main() -> Result<()> {
 
         match state {
             MachineState::Connected => {
+                // Replay the key that woke us from deep sleep, once BLE stabilizes
+                if let Some(ct) = connect_time {
+                    if now.duration_since(ct) >= Duration::from_millis(500) {
+                        if let Some((k1_wake, k2_wake)) = wakeup_key_to_send.take() {
+                            println!("Replaying wakeup key: k1={} k2={}", k1_wake, k2_wake);
+                            if k1_wake {
+                                keyboard_report.lock().set_value(&hid::create_keyboard_report(true));
+                                keyboard_report.lock().notify();
+                                FreeRtos::delay_ms(50);
+                                keyboard_report.lock().set_value(&hid::create_keyboard_report(false));
+                                keyboard_report.lock().notify();
+                                last_kb_report = [0u8; 8];
+                            }
+                            if k2_wake {
+                                consumer_report.lock().set_value(&hid::create_consumer_report(true));
+                                consumer_report.lock().notify();
+                                FreeRtos::delay_ms(50);
+                                consumer_report.lock().set_value(&hid::create_consumer_report(false));
+                                consumer_report.lock().notify();
+                                last_cons_report = [0u8; 1];
+                            }
+                        }
+                    }
+                }
+
                 let current_kb = hid::create_keyboard_report(k1_p);
                 if current_kb != last_kb_report {
                     keyboard_report.lock().set_value(&current_kb);
