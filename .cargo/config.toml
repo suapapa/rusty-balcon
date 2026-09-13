@@ -1,13 +1,15 @@
 [build]
-target = "riscv32imc-esp-espidf"
+target = "riscv32imac-esp-espidf"
 
 [unstable]
 build-std = ["std", "panic_abort"]
 
-[target.riscv32imc-esp-espidf]
+[target.riscv32imac-esp-espidf]
 linker = "ldproxy"
 runner = "espflash flash --monitor"
+# ESP-IDF 5.x uses 64-bit time_t
+rustflags = ["--cfg", "espidf_time64"]
 
 [env]
-MCU = "esp32c3"
+MCU = "esp32h2"
 # ESP_IDF_VERSION = "v5.1.2" # Optional: specify ESP-IDF version

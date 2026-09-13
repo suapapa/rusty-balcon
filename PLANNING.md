@@ -1,10 +1,10 @@
 # 2-Key Bluetooth Keyboard Implementation Plan
 
 ## Overview
-This document outlines the plan for building a 2-key Bluetooth (BLE) keyboard using the ESP32-C3 microcontroller, `esp-hal` (version `~1.0`), and the `bleps` Bluetooth stack. The firmware will manage key inputs, Bluetooth HID over GATT (HOGP) communication, LED status indication, and aggressive power saving via Deep Sleep.
+This document outlines the plan for building a 2-key Bluetooth (BLE) keyboard using the ESP32-H2 microcontroller, `esp-hal` (version `~1.0`), and the `bleps` Bluetooth stack. The firmware will manage key inputs, Bluetooth HID over GATT (HOGP) communication, LED status indication, and aggressive power saving via Deep Sleep.
 
 ## 1. Hardware Definition
-- **MCU**: ESP32-C3 (configured via `cargo` and `esp-hal`).
+- **MCU**: ESP32-H2 (configured via `cargo` and `esp-hal`).
 - **Inputs**: 2 Push Buttons connected to RTC-capable GPIO pins to allow waking up from deep sleep. Keys should use internal pull-up resistors (`Input<'d, PullUp>`).
 - **Outputs**: 1 LED connected to a standard output GPIO pin.
 - **Power**: Battery-operated, necessitating power-saving states.
@@ -46,7 +46,7 @@ The device operates in one of the following main states:
 - **Entering Deep Sleep**:
   1. Gracefully terminate BLE connections.
   2. Turn off the LED.
-  3. Configure the specific GPIO pins for the 2 keys as wakeup sources utilizing ESP32-C3's `Ext1WakeupSource` via the RTC controller.
+  3. Configure the specific GPIO pins for the 2 keys as wakeup sources utilizing ESP32-H2's GPIO deep-sleep wakeup.
   4. Invoke `Rtc::sleep_deep()`. The MCU will power down and effectively reset upon the next key press.
 
 ## 4. Software Architecture Outline
@@ -122,7 +122,7 @@ loop {
 ```
 
 ## Next Steps for Development
-1. Define the explicit GPIO mappings for the ESP32-C3 in `main.rs`.
+1. Define the explicit GPIO mappings for the ESP32-H2 in `main.rs`.
 2. Construct the BLE HID Report Map for a standard keyboard in `bleps`.
 3. Implement the timer-based state machine logic for debouncing and hold detection.
 4. Implement the deep sleep logic using `esp_hal::rtc_cntl::Rtc`.

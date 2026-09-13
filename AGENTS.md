@@ -2,11 +2,11 @@
 
 ## Project Overview
 
-**Rusty Balcon** is a Rust-based firmware for an ESP32-C3 acting as a 2-key barebones Bluetooth (BLE) keyboard. It utilizes the standard library (`std`) and `esp-idf-svc` for a more robust development environment. The firmware implements a HID Keyboard profile using the NimBLE stack via `esp32-nimble`.
+**Rusty Balcon** is a Rust-based firmware for an ESP32-H2 acting as a 2-key barebones Bluetooth (BLE) keyboard. It utilizes the standard library (`std`) and `esp-idf-svc` for a more robust development environment. The firmware implements a HID Keyboard profile using the NimBLE stack via `esp32-nimble`.
 
 ### Key Technologies
 - **Rust**: Edition 2024, Standard Library (`std`).
-- **Target Architecture**: `riscv32imc-esp-espidf` (ESP32-C3).
+- **Target Architecture**: `riscv32imac-esp-espidf` (ESP32-H2).
 - **Framework**: `esp-idf-svc` and `esp-idf-hal`.
 - **Bluetooth Stack**: `esp32-nimble` (NimBLE host stack).
 
@@ -35,12 +35,12 @@
 
 - **State Machine**: Periodic polling in a standard loop. States include `Idle`, `Pairing` (Advertising), and `Connected`.
 - **NimBLE HID**: Uses `BLEHIDDevice` to send keyboard reports. Input reports must be locked before updating values and notifying.
-- **Deep Sleep**: Triggered after `INACTIVITY_TIMEOUT`. Uses `esp_idf_sys` for low-level power management calls.
+- **Deep Sleep**: Triggered after `INACTIVITY_TIMEOUT`. Uses EXT1 wakeup on RTC GPIOs (7–14) via `esp_idf_sys`.
 - **Lint & Format**: Observe `rustfmt` rules. Check with `cargo clippy`.
 
 ## Testing Instructions
 
-- Functional tests require physical ESP32-C3 hardware.
+- Functional tests require physical ESP32-H2 hardware.
 - Use standard `println!` for logging (monitored via `espflash`).
 
 ## Debugging and Troubleshooting

@@ -76,20 +76,23 @@ fn main() -> Result<()> {
         esp_idf_sys::esp_log_level_set(tag.as_ptr(), esp_idf_sys::esp_log_level_t_ESP_LOG_WARN);
     }
 
+    // ESP32-H2 EXT1 wakeup GPIOs are RTC IOs 7–14. Keys use GPIO10 / GPIO11.
+    const KEY1_GPIO: u32 = 10;
+    const KEY2_GPIO: u32 = 11;
+
     // Check wakeup cause before taking peripherals (must be called early)
     let wakeup_gpio_status: u64 = unsafe {
         let cause = esp_idf_sys::esp_sleep_get_wakeup_cause();
-        if cause == esp_idf_sys::esp_sleep_source_t_ESP_SLEEP_WAKEUP_GPIO {
-            esp_idf_sys::esp_sleep_get_gpio_wakeup_status()
+        if cause == esp_idf_sys::esp_sleep_source_t_ESP_SLEEP_WAKEUP_EXT1 {
+            esp_idf_sys::esp_sleep_get_ext1_wakeup_status()
         } else {
             0
         }
     };
-    // Bit 1 = GPIO1 (key1/A), Bit 2 = GPIO2 (key2/voice)
     let wakeup_pending: Option<(bool, bool)> = if wakeup_gpio_status != 0 {
         Some((
-            (wakeup_gpio_status & (1 << 1)) != 0,
-            (wakeup_gpio_status & (1 << 2)) != 0,
+            (wakeup_gpio_status & (1 << KEY1_GPIO)) != 0,
+            (wakeup_gpio_status & (1 << KEY2_GPIO)) != 0,
         ))
     } else {
         None
@@ -99,9 +102,9 @@ fn main() -> Result<()> {
     let _sysloop = EspSystemEventLoop::take()?;
     let _nvs = EspDefaultNvsPartition::take()?;
 
-    // GPIO Setup
-    let key1 = PinDriver::input(peripherals.pins.gpio1, Pull::Up)?;
-    let key2 = PinDriver::input(peripherals.pins.gpio2, Pull::Up)?;
+    // GPIO Setup (RTC-capable pins required for deep-sleep EXT1 wakeup)
+    let key1 = PinDriver::input(peripherals.pins.gpio10, Pull::Up)?;
+    let key2 = PinDriver::input(peripherals.pins.gpio11, Pull::Up)?;
 
     // I2C & Display Setup
     let sda = peripherals.pins.gpio8;
@@ -258,12 +261,11 @@ fn main() -> Result<()> {
             FreeRtos::delay_ms(100);
 
             unsafe {
-                // Wake up from GPIO1 or GPIO2 (Low level)
-                use esp_idf_sys::*;
-                const WAKEUP_PIN_MASK: u64 = (1 << 1) | (1 << 2);
-                esp_deep_sleep_enable_gpio_wakeup(
+                // Wake on GPIO10 or GPIO11 low (ESP32-H2 EXT1 / RTC IO 7–14)
+                const WAKEUP_PIN_MASK: u64 = (1 << KEY1_GPIO) | (1 << KEY2_GPIO);
+                esp_idf_sys::esp_sleep_enable_ext1_wakeup(
                     WAKEUP_PIN_MASK,
-                    esp_deepsleep_gpio_wake_up_mode_t_ESP_GPIO_WAKEUP_GPIO_LOW,
+                    esp_idf_sys::esp_sleep_ext1_wakeup_mode_t_ESP_EXT1_WAKEUP_ANY_LOW,
                 );
                 esp_idf_sys::esp_deep_sleep_start();
             }
