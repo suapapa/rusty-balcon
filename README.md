@@ -14,7 +14,7 @@
 - **Microcontroller**: ESP32-H2
   - Module reference: [esp32-h2-supermini-kicad](https://github.com/Zektopic/esp32-h2-supermini-kicad)
 - **Inputs**: 3 Push Buttons (RTC GPIOs 7–14 required for deep-sleep EXT1 wakeup)
-  - Key 1: `GPIO13` (Internal Pull-Up) → ESC key
+  - Key 1: `GPIO13` (Internal Pull-Up) → Globe 🌐 (Consumer AC Keyboard Layout Select)
   - Key 2: `GPIO11` (Internal Pull-Up) → Voice Command (Consumer Control)
   - Key 3: `GPIO12` (Internal Pull-Up) → Enter key
 - **Display**: SH1106 128x64 OLED (I2C)
@@ -29,7 +29,7 @@
   - Display blanks after **30 seconds** of inactivity.
   - Enters Deep Sleep after **5 minutes** of inactivity to conserve battery. Wakes on button press (GPIO13, GPIO11, or GPIO12 via EXT1).
 - **Wakeup Key Replay**: The button press that wakes the device from deep sleep is remembered and automatically replayed 500ms after BLE reconnects, so the keypress is never lost.
-- **Pairing Mode**: Hold **ESC + Enter** simultaneously for 5 seconds to clear all bonds and enter pairing mode. OLED shows `>> PAIRING <<` while advertising for a new host.
+- **Pairing Mode**: Hold **Globe + Enter** simultaneously for 5 seconds to clear all bonds and enter pairing mode. OLED shows `>> PAIRING <<` while advertising for a new host.
 
 ## Device States
 
