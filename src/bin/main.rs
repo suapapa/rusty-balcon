@@ -82,8 +82,8 @@ fn main() -> Result<()> {
         esp_idf_sys::esp_log_level_set(tag.as_ptr(), esp_idf_sys::esp_log_level_t_ESP_LOG_WARN);
     }
 
-    // ESP32-H2 EXT1 wakeup GPIOs are RTC IOs 7–14. Keys use GPIO10 / GPIO11 / GPIO12.
-    const KEY1_GPIO: u32 = 10;
+    // ESP32-H2 EXT1 wakeup GPIOs are RTC IOs 7–14. Keys use GPIO13 / GPIO11 / GPIO12.
+    const KEY1_GPIO: u32 = 13;
     const KEY2_GPIO: u32 = 11;
     const KEY3_GPIO: u32 = 12;
 
@@ -111,13 +111,13 @@ fn main() -> Result<()> {
     let _nvs = EspDefaultNvsPartition::take()?;
 
     // GPIO Setup (RTC-capable pins required for deep-sleep EXT1 wakeup)
-    let key1 = PinDriver::input(peripherals.pins.gpio10, Pull::Up)?;
+    let key1 = PinDriver::input(peripherals.pins.gpio13, Pull::Up)?;
     let key2 = PinDriver::input(peripherals.pins.gpio11, Pull::Up)?;
     let key3 = PinDriver::input(peripherals.pins.gpio12, Pull::Up)?;
 
     // I2C & Display Setup
-    let sda = peripherals.pins.gpio8;
-    let scl = peripherals.pins.gpio9;
+    let sda = peripherals.pins.gpio4;
+    let scl = peripherals.pins.gpio5;
     let i2c_config = I2cConfig::new().baudrate(100u32.kHz().into());
     let i2c_driver = I2cDriver::new(peripherals.i2c0, sda, scl, &i2c_config)?;
 
@@ -271,7 +271,7 @@ fn main() -> Result<()> {
             FreeRtos::delay_ms(100);
 
             unsafe {
-                // Wake on GPIO10 / GPIO11 / GPIO12 low (ESP32-H2 EXT1 / RTC IO 7–14)
+                // Wake on GPIO13 / GPIO11 / GPIO12 low (ESP32-H2 EXT1 / RTC IO 7–14)
                 const WAKEUP_PIN_MASK: u64 =
                     (1 << KEY1_GPIO) | (1 << KEY2_GPIO) | (1 << KEY3_GPIO);
                 esp_idf_sys::esp_sleep_enable_ext1_wakeup(
@@ -282,8 +282,8 @@ fn main() -> Result<()> {
             }
         }
 
-        // Pairing Toggle (Hold both keys for 5s)
-        if k1_p && k2_p {
+        // Pairing Toggle (Hold ESC + Enter for 5s)
+        if k1_p && k3_p {
             if let Some(start) = hold_start {
                 if now.duration_since(start) >= config::PAIRING_HOLD_DURATION {
                     if state != MachineState::Pairing {
