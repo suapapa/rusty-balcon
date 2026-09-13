@@ -35,7 +35,7 @@
 
 - **State Machine**: Periodic polling in a standard loop. States include `Idle`, `Pairing` (Advertising), and `Connected`.
 - **NimBLE HID**: Uses `BLEHIDDevice` to send keyboard reports. Input reports must be locked before updating values and notifying.
-- **Deep Sleep**: Triggered after `INACTIVITY_TIMEOUT`. Uses EXT1 wakeup on RTC GPIOs (7–14) via `esp_idf_sys`.
+- **Deep Sleep**: Triggered after `INACTIVITY_TIMEOUT` only in `Idle` (never while `Connected` or `Pairing`). Uses EXT1 wakeup on RTC GPIOs (7–14) via `esp_idf_sys`.
 - **Lint & Format**: Observe `rustfmt` rules. Check with `cargo clippy`.
 
 ## Testing Instructions

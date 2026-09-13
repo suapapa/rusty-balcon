@@ -27,7 +27,8 @@ use sh1106::prelude::GraphicsMode;
 
 mod config {
     use std::time::Duration;
-    pub const INACTIVITY_TIMEOUT: Duration = Duration::from_secs(300); // 5 minutes
+    // Deep sleep only when Idle (not Connected). Keep BLE alive longer so keys respond immediately.
+    pub const INACTIVITY_TIMEOUT: Duration = Duration::from_secs(1800); // 30 minutes
     pub const DISPLAY_TIMEOUT: Duration = Duration::from_secs(30); // 30 seconds
     pub const PAIRING_HOLD_DURATION: Duration = Duration::from_secs(5);
     pub const KEY_FLASH_DURATION: Duration = Duration::from_millis(80);
@@ -331,11 +332,11 @@ fn main() -> Result<()> {
             last_led_color = led_color;
         }
 
-        // Deep Sleep Logic (Sleep if no activity for 60s, unless in Pairing mode)
-        if state != MachineState::Pairing
+        // Deep sleep only when Idle + inactive. Stay awake while Connected so BLE stays hot.
+        if state == MachineState::Idle
             && now.duration_since(last_activity) >= config::INACTIVITY_TIMEOUT
         {
-            println!("No activity for 30m. Entering deep sleep...");
+            println!("No activity for 30m while Idle. Entering deep sleep...");
             set_rgb_led(&mut rgb_led, RGB8::new(0, 0, 0));
             let _ = display.clear();
             let _ = display.flush();

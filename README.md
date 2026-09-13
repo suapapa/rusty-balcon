@@ -27,7 +27,8 @@
 - **OLED Status Display**: Shows current device state on a 128x64 OLED screen with key press visualization.
 - **Power Management**:
   - Display blanks after **30 seconds** of inactivity.
-  - Enters Deep Sleep after **5 minutes** of inactivity to conserve battery. Wakes on button press (GPIO13, GPIO11, or GPIO12 via EXT1).
+  - While **Connected**, stays awake (display off only) so keys remain instantly responsive.
+  - Enters Deep Sleep after **30 minutes** of inactivity **only when Idle** (disconnected). Wakes on button press (GPIO13, GPIO11, or GPIO12 via EXT1).
 - **Wakeup Key Replay**: The button press that wakes the device from deep sleep is remembered and automatically replayed 500ms after BLE reconnects, so the keypress is never lost.
 - **Pairing Mode**: Hold **Globe + Enter** simultaneously for 5 seconds to clear all bonds and enter pairing mode. OLED shows `>> PAIRING <<` while advertising for a new host.
 
