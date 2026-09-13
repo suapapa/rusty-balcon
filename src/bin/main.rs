@@ -7,8 +7,10 @@ use esp_idf_hal::units::*;
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp32_nimble::{BLEAdvertisementData, BLEDevice, BLEHIDDevice, NimbleProperties, enums::*};
+use smart_leds::{RGB8, SmartLedsWrite};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use ws2812_esp32_rmt_driver::Ws2812Esp32Rmt;
 
 use embedded_graphics::{
     mono_font::{
@@ -28,8 +30,41 @@ mod config {
     pub const INACTIVITY_TIMEOUT: Duration = Duration::from_secs(300); // 5 minutes
     pub const DISPLAY_TIMEOUT: Duration = Duration::from_secs(30); // 30 seconds
     pub const PAIRING_HOLD_DURATION: Duration = Duration::from_secs(5);
+    pub const KEY_FLASH_DURATION: Duration = Duration::from_millis(80);
     pub const KEY_ESC: u8 = 0x29; // Escape
     pub const KEY_ENTER: u8 = 0x28; // Enter / Return
+    // Keep onboard WS2812 dim — full white is a noticeable battery drain.
+    pub const LED_KEY_WHITE: u8 = 48;
+    pub const LED_PAIRING_BLUE: u8 = 40;
+}
+
+/// Blue heartbeat envelope: double-beat then rest, period 1.2s.
+fn pairing_heartbeat_level(elapsed_ms: u128) -> u8 {
+    let t = (elapsed_ms % 1200) as u32;
+    let peak = config::LED_PAIRING_BLUE as u32;
+    let envelope = |phase: u32, width: u32| -> u32 {
+        if phase >= width {
+            return 0;
+        }
+        // Triangle pulse
+        let half = width / 2;
+        if phase < half {
+            phase * peak / half
+        } else {
+            (width - phase) * peak / half
+        }
+    };
+    let level = match t {
+        0..=149 => envelope(t, 150),
+        150..=249 => 0,
+        250..=369 => envelope(t - 250, 120) * 7 / 10, // softer second beat
+        _ => 0,
+    };
+    level as u8
+}
+
+fn set_rgb_led(led: &mut Ws2812Esp32Rmt<'_>, color: RGB8) {
+    let _ = led.write(std::iter::once(color));
 }
 
 mod hid {
@@ -114,6 +149,12 @@ fn main() -> Result<()> {
     let key1 = PinDriver::input(peripherals.pins.gpio13, Pull::Up)?;
     let key2 = PinDriver::input(peripherals.pins.gpio11, Pull::Up)?;
     let key3 = PinDriver::input(peripherals.pins.gpio12, Pull::Up)?;
+
+    // Onboard WS2812 RGB LED (ESP32-H2 SuperMini → GPIO8)
+    // ws2812-esp32-rmt-driver 0.14 still uses the legacy RMT channel API.
+    #[allow(deprecated)]
+    let mut rgb_led = Ws2812Esp32Rmt::new(peripherals.rmt.channel0, peripherals.pins.gpio8)?;
+    set_rgb_led(&mut rgb_led, RGB8::new(0, 0, 0));
 
     // I2C & Display Setup
     let sda = peripherals.pins.gpio4;
@@ -241,6 +282,9 @@ fn main() -> Result<()> {
     let blink_timer = Instant::now();
     let mut wakeup_key_to_send = wakeup_pending; // pending key from deep sleep wakeup
     let mut connect_time: Option<Instant> = None; // time of last BLE connection
+    let mut prev_any_key = false;
+    let mut key_flash_until: Option<Instant> = None;
+    let mut last_led_color = RGB8::new(0, 0, 0);
 
     loop {
         let now = Instant::now();
@@ -261,11 +305,39 @@ fn main() -> Result<()> {
             last_activity = now;
         }
 
+        // White flash on any key press edge (same for all keys)
+        let any_key = k1_p || k2_p || k3_p;
+        if any_key && !prev_any_key {
+            key_flash_until = Some(now + config::KEY_FLASH_DURATION);
+        }
+        prev_any_key = any_key;
+
+        // Status LED: key flash > pairing heartbeat > off
+        let led_color = if key_flash_until.is_some_and(|until| now < until) {
+            let w = config::LED_KEY_WHITE;
+            RGB8::new(w, w, w)
+        } else {
+            key_flash_until = None;
+            if state == MachineState::Pairing {
+                let level = pairing_heartbeat_level(now.duration_since(blink_timer).as_millis());
+                RGB8::new(0, 0, level)
+            } else {
+                RGB8::new(0, 0, 0)
+            }
+        };
+        // Heartbeat needs frequent writes; otherwise only update on change.
+        let force_led_update = state == MachineState::Pairing && key_flash_until.is_none();
+        if force_led_update || led_color != last_led_color {
+            set_rgb_led(&mut rgb_led, led_color);
+            last_led_color = led_color;
+        }
+
         // Deep Sleep Logic (Sleep if no activity for 60s, unless in Pairing mode)
         if state != MachineState::Pairing
             && now.duration_since(last_activity) >= config::INACTIVITY_TIMEOUT
         {
             println!("No activity for 30m. Entering deep sleep...");
+            set_rgb_led(&mut rgb_led, RGB8::new(0, 0, 0));
             let _ = display.clear();
             let _ = display.flush();
             FreeRtos::delay_ms(100);

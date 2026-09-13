@@ -17,6 +17,8 @@ anyhow = "1.0"
 log = "0.4"
 embedded-graphics = "0.8"
 sh1106 = "0.5" # 1.3" I2C OLED (Standard Blue OLED uses this)
+smart-leds = "0.4"
+ws2812-esp32-rmt-driver = { version = "0.14", features = ["smart-leds-trait"] }
 
 [build-dependencies]
 embuild = "0.33"
