@@ -28,7 +28,8 @@ mod config {
     pub const INACTIVITY_TIMEOUT: Duration = Duration::from_secs(300); // 5 minutes
     pub const DISPLAY_TIMEOUT: Duration = Duration::from_secs(30); // 30 seconds
     pub const PAIRING_HOLD_DURATION: Duration = Duration::from_secs(5);
-    pub const KEY_A: u8 = 0x29; // ESC
+    pub const KEY_ESC: u8 = 0x29; // Escape
+    pub const KEY_ENTER: u8 = 0x28; // Enter / Return
 }
 
 mod hid {
@@ -42,10 +43,15 @@ mod hid {
         0x01, 0x09, 0xcf, 0x81, 0x02, 0x75, 0x01, 0x95, 0x07, 0x81, 0x03, 0xc0,
     ];
 
-    pub fn create_keyboard_report(pressed: bool) -> [u8; 8] {
+    pub fn create_keyboard_report(esc_pressed: bool, enter_pressed: bool) -> [u8; 8] {
         let mut report = [0u8; 8];
-        if pressed {
-            report[2] = crate::config::KEY_A;
+        let mut idx = 2;
+        if esc_pressed {
+            report[idx] = crate::config::KEY_ESC;
+            idx += 1;
+        }
+        if enter_pressed {
+            report[idx] = crate::config::KEY_ENTER;
         }
         report
     }
@@ -76,9 +82,10 @@ fn main() -> Result<()> {
         esp_idf_sys::esp_log_level_set(tag.as_ptr(), esp_idf_sys::esp_log_level_t_ESP_LOG_WARN);
     }
 
-    // ESP32-H2 EXT1 wakeup GPIOs are RTC IOs 7–14. Keys use GPIO10 / GPIO11.
+    // ESP32-H2 EXT1 wakeup GPIOs are RTC IOs 7–14. Keys use GPIO10 / GPIO11 / GPIO12.
     const KEY1_GPIO: u32 = 10;
     const KEY2_GPIO: u32 = 11;
+    const KEY3_GPIO: u32 = 12;
 
     // Check wakeup cause before taking peripherals (must be called early)
     let wakeup_gpio_status: u64 = unsafe {
@@ -89,10 +96,11 @@ fn main() -> Result<()> {
             0
         }
     };
-    let wakeup_pending: Option<(bool, bool)> = if wakeup_gpio_status != 0 {
+    let wakeup_pending: Option<(bool, bool, bool)> = if wakeup_gpio_status != 0 {
         Some((
             (wakeup_gpio_status & (1 << KEY1_GPIO)) != 0,
             (wakeup_gpio_status & (1 << KEY2_GPIO)) != 0,
+            (wakeup_gpio_status & (1 << KEY3_GPIO)) != 0,
         ))
     } else {
         None
@@ -105,6 +113,7 @@ fn main() -> Result<()> {
     // GPIO Setup (RTC-capable pins required for deep-sleep EXT1 wakeup)
     let key1 = PinDriver::input(peripherals.pins.gpio10, Pull::Up)?;
     let key2 = PinDriver::input(peripherals.pins.gpio11, Pull::Up)?;
+    let key3 = PinDriver::input(peripherals.pins.gpio12, Pull::Up)?;
 
     // I2C & Display Setup
     let sda = peripherals.pins.gpio8;
@@ -225,7 +234,7 @@ fn main() -> Result<()> {
 
     let mut last_activity = Instant::now();
     let mut hold_start: Option<Instant> = None;
-    let mut last_display_state = (MachineState::Idle, true, true, true); // Force initial draw
+    let mut last_display_state = (MachineState::Idle, true, true, true, true); // Force initial draw
     let mut last_kb_report = [0u8; 8];
     let mut last_cons_report = [0u8; 1];
     let mut display_is_on = true;
@@ -237,6 +246,7 @@ fn main() -> Result<()> {
         let now = Instant::now();
         let k1_p = key1.is_low();
         let k2_p = key2.is_low();
+        let k3_p = key3.is_low();
 
         let new_state = *server_arc.lock().unwrap();
         if new_state != state {
@@ -247,7 +257,7 @@ fn main() -> Result<()> {
             state = new_state;
         }
 
-        if k1_p || k2_p {
+        if k1_p || k2_p || k3_p {
             last_activity = now;
         }
 
@@ -261,8 +271,9 @@ fn main() -> Result<()> {
             FreeRtos::delay_ms(100);
 
             unsafe {
-                // Wake on GPIO10 or GPIO11 low (ESP32-H2 EXT1 / RTC IO 7–14)
-                const WAKEUP_PIN_MASK: u64 = (1 << KEY1_GPIO) | (1 << KEY2_GPIO);
+                // Wake on GPIO10 / GPIO11 / GPIO12 low (ESP32-H2 EXT1 / RTC IO 7–14)
+                const WAKEUP_PIN_MASK: u64 =
+                    (1 << KEY1_GPIO) | (1 << KEY2_GPIO) | (1 << KEY3_GPIO);
                 esp_idf_sys::esp_sleep_enable_ext1_wakeup(
                     WAKEUP_PIN_MASK,
                     esp_idf_sys::esp_sleep_ext1_wakeup_mode_t_ESP_EXT1_WAKEUP_ANY_LOW,
@@ -310,7 +321,7 @@ fn main() -> Result<()> {
             display_is_on = target_display_on;
             if display_is_on {
                 // Force redraw when turning back on
-                last_display_state = (MachineState::Idle, true, true, true);
+                last_display_state = (MachineState::Idle, true, true, true, true);
             }
         }
 
@@ -318,7 +329,7 @@ fn main() -> Result<()> {
         let is_pairing_blink = state == MachineState::Pairing
             && (now.duration_since(blink_timer).as_millis() % 1000 < 500);
         let is_reconnecting = wakeup_key_to_send.is_some();
-        let current_display_state = (state, k1_p, k2_p, is_pairing_blink || is_reconnecting);
+        let current_display_state = (state, k1_p, k2_p, k3_p, is_pairing_blink || is_reconnecting);
 
         if display_is_on && current_display_state != last_display_state {
             let _ = display.clear();
@@ -370,56 +381,37 @@ fn main() -> Result<()> {
             let key_width = 24u32;
             let key_height = 14u32;
             let key_y = 42i32;
+            let key_xs = [14i32, 52, 90];
+            let key_labels = ["ESC", "MIC", "ENT"];
+            let key_pressed = [k1_p, k2_p, k3_p];
 
-            // Key 1 (A)
-            let k1_rect = Rectangle::new(Point::new(34, key_y), Size::new(key_width, key_height));
-            let k1_style = if k1_p {
-                PrimitiveStyle::with_fill(BinaryColor::On)
-            } else {
-                PrimitiveStyle::with_stroke(BinaryColor::On, 1)
-            };
-            let _ = k1_rect.into_styled(k1_style).draw(&mut display);
+            for i in 0..3 {
+                let x = key_xs[i];
+                let pressed = key_pressed[i];
+                let rect = Rectangle::new(Point::new(x, key_y), Size::new(key_width, key_height));
+                let style = if pressed {
+                    PrimitiveStyle::with_fill(BinaryColor::On)
+                } else {
+                    PrimitiveStyle::with_stroke(BinaryColor::On, 1)
+                };
+                let _ = rect.into_styled(style).draw(&mut display);
 
-            let k1_text_style = if k1_p {
-                MonoTextStyleBuilder::new()
-                    .font(&FONT_6X10)
-                    .text_color(BinaryColor::Off)
-                    .build()
-            } else {
-                header_style
-            };
-            let _ = Text::with_alignment(
-                "A",
-                Point::new(34 + key_width as i32 / 2, key_y + 11),
-                k1_text_style,
-                Alignment::Center,
-            )
-            .draw(&mut display);
-
-            // Key 2 (B)
-            let k2_rect = Rectangle::new(Point::new(70, key_y), Size::new(key_width, key_height));
-            let k2_style = if k2_p {
-                PrimitiveStyle::with_fill(BinaryColor::On)
-            } else {
-                PrimitiveStyle::with_stroke(BinaryColor::On, 1)
-            };
-            let _ = k2_rect.into_styled(k2_style).draw(&mut display);
-
-            let k2_text_style = if k2_p {
-                MonoTextStyleBuilder::new()
-                    .font(&FONT_6X10)
-                    .text_color(BinaryColor::Off)
-                    .build()
-            } else {
-                header_style
-            };
-            let _ = Text::with_alignment(
-                "B",
-                Point::new(70 + key_width as i32 / 2, key_y + 11),
-                k2_text_style,
-                Alignment::Center,
-            )
-            .draw(&mut display);
+                let text_style = if pressed {
+                    MonoTextStyleBuilder::new()
+                        .font(&FONT_6X10)
+                        .text_color(BinaryColor::Off)
+                        .build()
+                } else {
+                    header_style
+                };
+                let _ = Text::with_alignment(
+                    key_labels[i],
+                    Point::new(x + key_width as i32 / 2, key_y + 11),
+                    text_style,
+                    Alignment::Center,
+                )
+                .draw(&mut display);
+            }
 
             if let Err(e) = display.flush() {
                 println!("Display flush error: {:?}", e);
@@ -432,13 +424,20 @@ fn main() -> Result<()> {
                 // Replay the key that woke us from deep sleep, once BLE stabilizes
                 if let Some(ct) = connect_time {
                     if now.duration_since(ct) >= Duration::from_millis(500) {
-                        if let Some((k1_wake, k2_wake)) = wakeup_key_to_send.take() {
-                            println!("Replaying wakeup key: k1={} k2={}", k1_wake, k2_wake);
-                            if k1_wake {
-                                keyboard_report.lock().set_value(&hid::create_keyboard_report(true));
+                        if let Some((k1_wake, k2_wake, k3_wake)) = wakeup_key_to_send.take() {
+                            println!(
+                                "Replaying wakeup key: k1={} k2={} k3={}",
+                                k1_wake, k2_wake, k3_wake
+                            );
+                            if k1_wake || k3_wake {
+                                keyboard_report
+                                    .lock()
+                                    .set_value(&hid::create_keyboard_report(k1_wake, k3_wake));
                                 keyboard_report.lock().notify();
                                 FreeRtos::delay_ms(50);
-                                keyboard_report.lock().set_value(&hid::create_keyboard_report(false));
+                                keyboard_report
+                                    .lock()
+                                    .set_value(&hid::create_keyboard_report(false, false));
                                 keyboard_report.lock().notify();
                                 last_kb_report = [0u8; 8];
                             }
@@ -446,7 +445,9 @@ fn main() -> Result<()> {
                                 consumer_report.lock().set_value(&hid::create_consumer_report(true));
                                 consumer_report.lock().notify();
                                 FreeRtos::delay_ms(50);
-                                consumer_report.lock().set_value(&hid::create_consumer_report(false));
+                                consumer_report
+                                    .lock()
+                                    .set_value(&hid::create_consumer_report(false));
                                 consumer_report.lock().notify();
                                 last_cons_report = [0u8; 1];
                             }
@@ -454,7 +455,7 @@ fn main() -> Result<()> {
                     }
                 }
 
-                let current_kb = hid::create_keyboard_report(k1_p);
+                let current_kb = hid::create_keyboard_report(k1_p, k3_p);
                 if current_kb != last_kb_report {
                     keyboard_report.lock().set_value(&current_kb);
                     keyboard_report.lock().notify();

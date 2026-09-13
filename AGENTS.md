@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-**Rusty Balcon** is a Rust-based firmware for an ESP32-H2 acting as a 2-key barebones Bluetooth (BLE) keyboard. It utilizes the standard library (`std`) and `esp-idf-svc` for a more robust development environment. The firmware implements a HID Keyboard profile using the NimBLE stack via `esp32-nimble`.
+**Rusty Balcon** is a Rust-based firmware for an ESP32-H2 acting as a 3-key barebones Bluetooth (BLE) keyboard. It utilizes the standard library (`std`) and `esp-idf-svc` for a more robust development environment. The firmware implements a HID Keyboard profile using the NimBLE stack via `esp32-nimble`.
 
 ### Key Technologies
 - **Rust**: Edition 2024, Standard Library (`std`).
