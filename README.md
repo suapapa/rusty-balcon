@@ -12,6 +12,7 @@
 ## Hardware Configuration
 
 - **Microcontroller**: ESP32-H2
+  - Module reference: [esp32-h2-supermini-kicad](https://github.com/Zektopic/esp32-h2-supermini-kicad)
 - **Inputs**: 3 Push Buttons (RTC GPIOs 7–14 required for deep-sleep EXT1 wakeup)
   - Key 1: `GPIO10` (Internal Pull-Up) → ESC key
   - Key 2: `GPIO11` (Internal Pull-Up) → Voice Command (Consumer Control)
