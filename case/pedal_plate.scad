@@ -1,25 +1,32 @@
+intersection() {
+    //box-left
+    translate([-270-2,0,0])  cube(270);
+    //box-right
+    //translate([2,0,0])  cube(270);
+    translate([42.5,0,0]) {
+        translate([-270/2,0,0]) cube([270, 110, 1]);
 
-translate([-270/2,0,0]) cube([270, 110, 1]);
+        translate([-70*2+70/2,0,0]) union(){
+            pedal();
+            translate([70,0,0]) control_box();
+            translate([70*2,0,0]) pedal();
+            translate([70*3,0,0]) pedal();
+        }
 
-translate([-70*2+70/2,0,0]) union(){
-    pedal();
-    translate([70,0,0]) control_box();
-    translate([70*2,0,0]) pedal();
-    translate([70*3,0,0]) pedal();
-}
-
-difference() {
-    union() {
-        translate([-65,100+25+5,0]) wire_box();
-        translate([65,100+25+5,0]) wire_box();
+        difference() {
+            union() {
+                translate([-65-20,100+25+5,0]) wire_box(L=80);
+                translate([65-20,100+25+5,0]) wire_box(L=170);
+            }
+            #translate([0-20,125,15])rotate([0,90,0]) cylinder(h=70,r=5,center=true);
+            translate([125,125+15,15]) usb_c();
+            translate([125,125-3,15]) pwr_sw();
+        }
     }
-    translate([0,125,15])rotate([0,90,0]) cylinder(h=30,r=5,center=true);
-    translate([125,125+15,15]) usb_c();
-    translate([125,125-3,15]) pwr_sw();
 }
 
 module pedal() {
-    w = 46.4;   // 사각형 가로 (X)
+    w = 40.4;   // 사각형 가로 (X)
     h = 80.8;   // 사각형 세로 (Y)
     r = 3;      // 실린더 반지름
     hgt = 7;    // 실린더 높이
@@ -51,8 +58,8 @@ module control_box() {
     translate([-25,90,0]) cylinder(5, r, r);
 }
 
-module wire_box() {
-    L = 125;  // X
+module wire_box(L=125) {
+    //L = 125;  // X
     W = 50;   // Y
     H = 30;   // Z
     t = 1.5;  // 두께
