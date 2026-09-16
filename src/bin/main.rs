@@ -5,7 +5,7 @@ use esp_idf_hal::i2c::*;
 use esp_idf_hal::peripherals::Peripherals;
 use esp_idf_hal::units::*;
 use esp_idf_svc::eventloop::EspSystemEventLoop;
-use esp_idf_svc::nvs::EspDefaultNvsPartition;
+use esp_idf_svc::nvs::{EspDefaultNvsPartition, EspNvs};
 use esp32_nimble::{BLEAdvertisementData, BLEDevice, BLEHIDDevice, NimbleProperties, enums::*};
 use smart_leds::{RGB8, SmartLedsWrite};
 use std::sync::{Arc, Mutex};
@@ -31,8 +31,10 @@ mod config {
     pub const INACTIVITY_TIMEOUT: Duration = Duration::from_secs(1800); // 30 minutes
     pub const DISPLAY_TIMEOUT: Duration = Duration::from_secs(30); // 30 seconds
     pub const PAIRING_HOLD_DURATION: Duration = Duration::from_secs(5);
+    pub const MODE_HOLD_DURATION: Duration = Duration::from_secs(5);
     pub const KEY_FLASH_DURATION: Duration = Duration::from_millis(80);
     pub const KEY_ENTER: u8 = 0x28; // Enter / Return
+    pub const KEY_ESC: u8 = 0x29; // Escape
     // Keep onboard WS2812 dim — full white is a noticeable battery drain.
     pub const LED_KEY_WHITE: u8 = 48;
     pub const LED_PAIRING_BLUE: u8 = 40;
@@ -67,6 +69,42 @@ fn set_rgb_led(led: &mut Ws2812Esp32Rmt<'_>, color: RGB8) {
     let _ = led.write(std::iter::once(color));
 }
 
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+pub enum Key2Mode {
+    Voice,
+    Esc,
+}
+
+impl Key2Mode {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Key2Mode::Voice => "MIC",
+            Key2Mode::Esc => "ESC",
+        }
+    }
+
+    pub fn toggle(&self) -> Self {
+        match self {
+            Key2Mode::Voice => Key2Mode::Esc,
+            Key2Mode::Esc => Key2Mode::Voice,
+        }
+    }
+
+    pub fn to_u8(&self) -> u8 {
+        match self {
+            Key2Mode::Voice => 0,
+            Key2Mode::Esc => 1,
+        }
+    }
+
+    pub fn from_u8(val: u8) -> Self {
+        match val {
+            1 => Key2Mode::Esc,
+            _ => Key2Mode::Voice,
+        }
+    }
+}
+
 mod hid {
     pub const REPORT_DESCRIPTOR: &[u8] = &[
         // Keyboard Report (ID 1)
@@ -80,10 +118,15 @@ mod hid {
         0x02, 0x09, 0xcf, 0x0a, 0x9d, 0x02, 0x81, 0x02, 0x75, 0x01, 0x95, 0x06, 0x81, 0x03, 0xc0,
     ];
 
-    pub fn create_keyboard_report(enter_pressed: bool) -> [u8; 8] {
+    pub fn create_keyboard_report(enter_pressed: bool, esc_pressed: bool) -> [u8; 8] {
         let mut report = [0u8; 8];
+        let mut idx = 2;
         if enter_pressed {
-            report[2] = crate::config::KEY_ENTER;
+            report[idx] = crate::config::KEY_ENTER;
+            idx += 1;
+        }
+        if esc_pressed {
+            report[idx] = crate::config::KEY_ESC;
         }
         report
     }
@@ -143,7 +186,28 @@ fn main() -> Result<()> {
 
     let peripherals = Peripherals::take().unwrap();
     let _sysloop = EspSystemEventLoop::take()?;
-    let _nvs = EspDefaultNvsPartition::take()?;
+    let nvs_default = EspDefaultNvsPartition::take()?;
+    let mut nvs = match EspNvs::new(nvs_default, "config", true) {
+        Ok(nvs) => Some(nvs),
+        Err(e) => {
+            println!("Failed to initialize NVS: {:?}", e);
+            None
+        }
+    };
+
+    let mut key2_mode = if let Some(nvs) = &nvs {
+        match nvs.get_u8("k2_mode") {
+            Ok(Some(val)) => Key2Mode::from_u8(val),
+            Ok(None) => Key2Mode::Voice,
+            Err(e) => {
+                println!("Failed to read k2_mode from NVS: {:?}", e);
+                Key2Mode::Voice
+            }
+        }
+    } else {
+        Key2Mode::Voice
+    };
+    println!("Initial Key 2 Mode: {:?}", key2_mode);
 
     // GPIO Setup (RTC-capable pins required for deep-sleep EXT1 wakeup)
     let key1 = PinDriver::input(peripherals.pins.gpio13, Pull::Up)?;
@@ -274,8 +338,11 @@ fn main() -> Result<()> {
     });
 
     let mut last_activity = Instant::now();
-    let mut hold_start: Option<Instant> = None;
-    let mut last_display_state = (MachineState::Idle, true, true, true, true); // Force initial draw
+    let mut pairing_hold_start: Option<Instant> = None;
+    let mut mode_hold_start: Option<Instant> = None;
+    let mut mode_hold_triggered = false;
+    let mut mode_toast_until: Option<Instant> = None;
+    let mut last_display_state = (MachineState::Idle, true, true, true, Key2Mode::Voice, true, false); // Force initial draw
     let mut last_kb_report = [0u8; 8];
     let mut last_cons_report = [0u8; 1];
     let mut display_is_on = true;
@@ -354,9 +421,44 @@ fn main() -> Result<()> {
             }
         }
 
-        // Pairing Toggle (Hold Globe + Enter for 5s)
-        if k1_p && k3_p {
-            if let Some(start) = hold_start {
+        // Key 2 Mode Toggle (Hold Key 1 + Key 2 for 5s)
+        if k1_p && k2_p && !k3_p {
+            if !mode_hold_triggered {
+                if let Some(start) = mode_hold_start {
+                    if now.duration_since(start) >= config::MODE_HOLD_DURATION {
+                        key2_mode = key2_mode.toggle();
+                        println!("Key 2 Mode changed to: {:?}", key2_mode);
+                        if let Some(nvs) = &mut nvs {
+                            if let Err(e) = nvs.set_u8("k2_mode", key2_mode.to_u8()) {
+                                println!("Failed to save k2_mode to NVS: {:?}", e);
+                            }
+                        }
+                        mode_hold_triggered = true;
+                        mode_toast_until = Some(now + Duration::from_secs(2));
+                        key_flash_until = Some(now + Duration::from_millis(300));
+
+                        // Release any currently pressed key reports immediately
+                        if state == MachineState::Connected {
+                            keyboard_report.lock().set_value(&[0u8; 8]);
+                            keyboard_report.lock().notify();
+                            consumer_report.lock().set_value(&[0u8; 1]);
+                            consumer_report.lock().notify();
+                            last_kb_report = [0u8; 8];
+                            last_cons_report = [0u8; 1];
+                        }
+                    }
+                } else {
+                    mode_hold_start = Some(now);
+                }
+            }
+        } else {
+            mode_hold_start = None;
+            mode_hold_triggered = false;
+        }
+
+        // Pairing Toggle (Hold Key 1 + Key 3 for 5s)
+        if k1_p && k3_p && !k2_p {
+            if let Some(start) = pairing_hold_start {
                 if now.duration_since(start) >= config::PAIRING_HOLD_DURATION {
                     if state != MachineState::Pairing {
                         println!("Manual Pairing Start (Clearing all bonds)...");
@@ -371,16 +473,18 @@ fn main() -> Result<()> {
                     }
                 }
             } else {
-                hold_start = Some(now);
+                pairing_hold_start = Some(now);
             }
         } else {
-            hold_start = None;
+            pairing_hold_start = None;
         }
 
         // Display Power Management
         let inactivity_duration = now.duration_since(last_activity);
-        let target_display_on =
-            state == MachineState::Pairing || inactivity_duration < config::DISPLAY_TIMEOUT;
+        let is_mode_toast = mode_toast_until.is_some_and(|until| now < until);
+        let target_display_on = state == MachineState::Pairing
+            || inactivity_duration < config::DISPLAY_TIMEOUT
+            || is_mode_toast;
 
         if target_display_on != display_is_on {
             if target_display_on {
@@ -393,7 +497,7 @@ fn main() -> Result<()> {
             display_is_on = target_display_on;
             if display_is_on {
                 // Force redraw when turning back on
-                last_display_state = (MachineState::Idle, true, true, true, true);
+                last_display_state = (MachineState::Idle, true, true, true, Key2Mode::Voice, true, false);
             }
         }
 
@@ -401,7 +505,15 @@ fn main() -> Result<()> {
         let is_pairing_blink = state == MachineState::Pairing
             && (now.duration_since(blink_timer).as_millis() % 1000 < 500);
         let is_reconnecting = wakeup_key_to_send.is_some();
-        let current_display_state = (state, k1_p, k2_p, k3_p, is_pairing_blink || is_reconnecting);
+        let current_display_state = (
+            state,
+            k1_p,
+            k2_p,
+            k3_p,
+            key2_mode,
+            is_pairing_blink || is_reconnecting,
+            is_mode_toast,
+        );
 
         if display_is_on && current_display_state != last_display_state {
             let _ = display.clear();
@@ -424,22 +536,29 @@ fn main() -> Result<()> {
                 .draw(&mut display);
 
             // Connection Status
-            let status_text = match state {
-                MachineState::Idle => {
-                    if wakeup_key_to_send.is_some() {
-                        "RECONNECTING..."
-                    } else {
-                        "IDLE"
-                    }
+            let status_text = if is_mode_toast {
+                match key2_mode {
+                    Key2Mode::Voice => "MODE: VOICE",
+                    Key2Mode::Esc => "MODE: ESC",
                 }
-                MachineState::Pairing => {
-                    if is_pairing_blink {
-                        ">> PAIRING <<"
-                    } else {
-                        "-- PAIRING --"
+            } else {
+                match state {
+                    MachineState::Idle => {
+                        if wakeup_key_to_send.is_some() {
+                            "RECONNECTING..."
+                        } else {
+                            "IDLE"
+                        }
                     }
+                    MachineState::Pairing => {
+                        if is_pairing_blink {
+                            ">> PAIRING <<"
+                        } else {
+                            "-- PAIRING --"
+                        }
+                    }
+                    MachineState::Connected => "CONNECTED",
                 }
-                MachineState::Connected => "CONNECTED",
             };
             let _ = Text::with_alignment(
                 status_text,
@@ -454,7 +573,7 @@ fn main() -> Result<()> {
             let key_height = 14u32;
             let key_y = 42i32;
             let key_xs = [14i32, 52, 90];
-            let key_labels = ["GLB", "MIC", "ENT"];
+            let key_labels = ["GLB", key2_mode.label(), "ENT"];
             let key_pressed = [k1_p, k2_p, k3_p];
 
             for i in 0..3 {
@@ -501,22 +620,25 @@ fn main() -> Result<()> {
                                 "Replaying wakeup key: k1={} k2={} k3={}",
                                 k1_wake, k2_wake, k3_wake
                             );
-                            if k3_wake {
+                            let esc_wake = k2_wake && key2_mode == Key2Mode::Esc;
+                            let voice_wake = k2_wake && key2_mode == Key2Mode::Voice;
+
+                            if k3_wake || esc_wake {
                                 keyboard_report
                                     .lock()
-                                    .set_value(&hid::create_keyboard_report(true));
+                                    .set_value(&hid::create_keyboard_report(k3_wake, esc_wake));
                                 keyboard_report.lock().notify();
                                 FreeRtos::delay_ms(50);
                                 keyboard_report
                                     .lock()
-                                    .set_value(&hid::create_keyboard_report(false));
+                                    .set_value(&hid::create_keyboard_report(false, false));
                                 keyboard_report.lock().notify();
                                 last_kb_report = [0u8; 8];
                             }
-                            if k1_wake || k2_wake {
+                            if k1_wake || voice_wake {
                                 consumer_report
                                     .lock()
-                                    .set_value(&hid::create_consumer_report(k1_wake, k2_wake));
+                                    .set_value(&hid::create_consumer_report(k1_wake, voice_wake));
                                 consumer_report.lock().notify();
                                 FreeRtos::delay_ms(50);
                                 consumer_report
@@ -529,14 +651,22 @@ fn main() -> Result<()> {
                     }
                 }
 
-                let current_kb = hid::create_keyboard_report(k3_p);
+                // Filter out keys if user is holding them for mode toggle
+                let send_k1 = k1_p && !mode_hold_triggered;
+                let send_k2 = k2_p && !mode_hold_triggered;
+                let send_k3 = k3_p;
+
+                let esc_pressed = send_k2 && key2_mode == Key2Mode::Esc;
+                let voice_pressed = send_k2 && key2_mode == Key2Mode::Voice;
+
+                let current_kb = hid::create_keyboard_report(send_k3, esc_pressed);
                 if current_kb != last_kb_report {
                     keyboard_report.lock().set_value(&current_kb);
                     keyboard_report.lock().notify();
                     last_kb_report = current_kb;
                 }
 
-                let current_cons = hid::create_consumer_report(k1_p, k2_p);
+                let current_cons = hid::create_consumer_report(send_k1, voice_pressed);
                 if current_cons != last_cons_report {
                     consumer_report.lock().set_value(&current_cons);
                     consumer_report.lock().notify();
