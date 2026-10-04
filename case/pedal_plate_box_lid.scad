@@ -1,9 +1,12 @@
 /* Box + L자 뚜껑 (위에서 나사 체결) */
 
+P = 0; // 0: left, 1: right;
+
 // ===== 기본 박스 치수 =====
-// L = 125;  // X
-// L = 80;  // X - left
-L = 170;  // X - right
+L = (P == 0) ? 80 : // left
+    (P == 1) ? 170 : // right
+               125; // 기본값 (P가 0이나 1이 아닐 때)
+
 W = 50;   // Y
 H = 30;   // Z
 t = 1.5;  // 두께
@@ -22,16 +25,18 @@ screw_xys = [
 
 // ===== 박스 =====
 module wire_box() {
-    difference() {
-        translate([-L/2, -W/2, 0])
-            cube([L, W, H]);
-        translate([-L/2 + t, -W/2 + t, t])
-            cube([L - 2*t, W - 2*t, H - t + 1]);
-        translate([-L/2 + t, -W/2 + t-5, t+5])
-            cube([L - 2*t, W - 2*t, H - t + 1]);
-    }
-    for (x = [-L/2+4, L/2-4], y = [-W/2+4, W/2-4]) {
-        translate([x,y,0]) box_pilla(H);
+    color("Gray"){
+        difference() {
+            translate([-L/2, -W/2, 0])
+                cube([L, W, H]);
+            translate([-L/2 + t, -W/2 + t, t])
+                cube([L - 2*t, W - 2*t, H - t + 1]);
+            translate([-L/2 + t, -W/2 + t-5, t+5])
+                cube([L - 2*t, W - 2*t, H - t + 1]);
+        }
+        for (x = [-L/2+4, L/2-4], y = [-W/2+4, W/2-4]) {
+            translate([x,y,0]) box_pilla(H);
+        }
     }
 }
 

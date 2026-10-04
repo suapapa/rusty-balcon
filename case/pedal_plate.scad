@@ -1,8 +1,24 @@
+
+P=0; // 0: all, 1: left, 2: right
+
+
 intersection() {
-    //box-left
-    translate([-270-2,0,0])  cube(270);
-    //box-right
-    //translate([2,0,0])  cube(270);
+    if(P==0) {
+        pedal_plate();
+    } else if(P==1){
+        intersection() {
+            translate([-270-2,0,0])  cube(270);
+            pedal_plate();
+        }
+    } else if(P==2){
+        intersection() {
+            translate([2,0,0])  cube(270);
+            pedal_plate();
+        }
+    }
+}
+
+module pedal_plate() {
     translate([42.5,0,0]) {
         translate([-270/2,0,0]) cube([270, 110, 1]);
 
@@ -19,8 +35,8 @@ intersection() {
                 translate([65-20,100+25+5,0]) wire_box(L=170);
             }
             #translate([0-20,125,15])rotate([0,90,0]) cylinder(h=70,r=5,center=true);
-            translate([125,125+15,15]) usb_c();
-            translate([125,125-3,15]) pwr_sw();
+            #translate([125,125+15,15]) usb_c();
+            #translate([125,125-3,15]) pwr_sw();
         }
     }
 }
@@ -32,30 +48,34 @@ module pedal() {
     hgt = 7;    // 실린더 높이
     $fn = 12;
     translate([0,h/2+8,0]) {
-        for (x = [-w/2, w/2], y = [-h/2, h/2]) {
-            translate([x, y, 0])
-                cylinder(r = r, h = hgt);
-        }
+        color("SteelBlue") {
+            for (x = [-w/2, w/2], y = [-h/2, h/2]) {
+                translate([x, y, 0])
+                    cylinder(r = r, h = hgt);
+            }
         
-        hull() {
-            translate([-w/2, -h/2, 0]) cylinder(r=r+2, h=2);
-            translate([w/2, h/2, 0]) cylinder(r=r+2, h=2);
+            hull() {
+                translate([-w/2, -h/2, 0]) cylinder(r=r+2, h=2);
+                translate([w/2, h/2, 0]) cylinder(r=r+2, h=2);
+            }
+            hull() {
+                translate([-w/2, h/2, 0]) cylinder(r=r+2, h=2);
+                translate([w/2, -h/2, 0]) cylinder(r=r+2, h=2);
+            }
+            
+            translate([0,0,1]) cube([26,43,2], center=true);
         }
-        hull() {
-            translate([-w/2, h/2, 0]) cylinder(r=r+2, h=2);
-            translate([w/2, -h/2, 0]) cylinder(r=r+2, h=2);
-        }
-        
-        translate([0,0,1]) cube([26,43,2], center=true);
     }
 }
 
 module control_box() {
     r=3-0.1;
-    translate([25,10,0]) cylinder(5, r, r);
-    translate([-25,10,0]) cylinder(5, r, r);
-    translate([25,90,0]) cylinder(5, r, r);
-    translate([-25,90,0]) cylinder(5, r, r);
+    color("SteelBlue") {
+        translate([25,10,0]) cylinder(5, r, r);
+        translate([-25,10,0]) cylinder(5, r, r);
+        translate([25,90,0]) cylinder(5, r, r);
+        translate([-25,90,0]) cylinder(5, r, r);
+    }
 }
 
 module wire_box(L=125) {
